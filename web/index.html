@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <link rel="manifest" href="manifest.webmanifest">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <meta name="theme-color" content="#0a0a0a">
@@ -30,6 +31,7 @@
     </div>
     <button id="open-showcase" class="btn showcase-btn" type="button" title="Featured Showcase &amp; Interactive Tour"><span class="ic" aria-hidden="true">✦</span><span class="lbl">Showcase</span></button>
     <div class="spacer"></div>
+    <button id="format-verilog" class="chip wide" title="Format Verilog (Shift+Alt+F)">Format</button>
     <div class="runbar">
       <button id="assemble" class="btn" hidden title="Assemble MIPS .asm/.s into .mem (Ctrl+Shift+A)">
         <span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4M9 9h6v6H9z"/></svg></span>
@@ -73,7 +75,7 @@
   <main class="layout">
     <aside class="sidebar">
       <div class="side-head">
-        <span>FILES</span>
+        <button id="sidebar-files" class="chip" aria-pressed="true">Files</button><button id="sidebar-hierarchy" class="chip" aria-pressed="false">Hierarchy</button>
         <span class="spacer"></span>
         <button id="new-file" class="icon-btn" aria-label="New file" title="New file">
           <svg class="i" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M12 12v6M9 15h6"/></svg>
@@ -95,6 +97,7 @@
         </button>
       </div>
       <nav id="files" class="tree scroll" aria-label="Workspace files"></nav>
+      <nav id="hierarchy-tree" class="tree scroll" aria-label="Module hierarchy" hidden></nav>
       <div class="file-actions">
         <span id="active-file">Active: design.v</span>
         <div class="file-action-btns">
@@ -187,6 +190,9 @@
         </div>
         <div id="waveform" role="tabpanel" class="panel-body" hidden>
           <div class="wave-toolbar">
+            <button id="wave-add-group" class="chip">+ Group</button>
+            <button id="wave-add-slice" class="chip">+ Slice</button>
+            <label for="wave-views">Views</label><select id="wave-views"><option value="">Select view</option></select><button id="wave-save-view" class="chip" aria-label="Save wave view">Save</button><button id="wave-delete-view" class="chip" aria-label="Delete wave view">Delete</button>
             <button id="open-vcd" class="chip">Open VCD</button>
             <button id="download-vcd" class="chip" disabled>Download VCD</button>
             <button id="wave-fit" class="chip" title="Fit waveform">Fit</button>
@@ -464,6 +470,8 @@
       <div class="setting-row"><label for="kb-size">Key row size</label><select id="kb-size"><option value="s">Small</option><option value="m" selected>Medium</option><option value="l">Large</option></select></div>
       <div class="setting-row"><label for="kb-rows">Key row lines</label><select id="kb-rows"><option value="1" selected>One (scrolls sideways)</option><option value="2">Two (all keys visible)</option></select></div>
 
+      <label class="check-label"><input id="live-lint" type="checkbox" checked><span>Live lint</span></label>
+      <label class="check-label"><input id="inline-values" type="checkbox" checked><span>Inline waveform values</span></label>
       <div class="set-sec">Simulation</div>
       <label class="check-label"><input id="auto-switch-wave" type="checkbox" checked><span>Auto-switch to Waveform on VCD</span></label>
       <label class="check-label"><input id="auto-clear-console" type="checkbox" checked><span>Clear Console before each run</span></label>

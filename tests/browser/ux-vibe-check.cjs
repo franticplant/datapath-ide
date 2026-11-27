@@ -2,6 +2,7 @@
 // Run offline inside Playwright mvm:
 //   mvm run -i mcr.microsoft.com/playwright:v1.48.2-jammy -u $(id -u):$(id -g) -- node tests/browser/ux-vibe-check.cjs
 const { existsSync, mkdirSync } = require('fs');
+const assert = require('assert/strict');
 const { createServer } = require('http');
 const { readFile } = require('fs/promises');
 const { join, extname } = require('path');
@@ -155,6 +156,53 @@ const box = async loc => {
     report.scenarios.desktopLightTheme = await metrics(page);
     await snap(page, '07-light-theme.png');
 
+    assert.equal(report.scenarios.laptopFresh.inspector.visible, false);
+    assert.ok(report.scenarios.laptopFresh.editor.width >= 900);
+    assert.equal(report.scenarios.phoneBoard.visibleBeforeNavTap, true);
+    assert.equal(report.scenarios.phoneSchematicInspect.visibleImmediatelyOnResize, true);
+    for (const [name, scenario] of Object.entries(report.scenarios)) {
+      assert.equal(scenario.overflowX, false, `${name}: horizontal overflow`);
+      assert.equal(scenario.topbarWrapped, false, `${name}: wrapped topbar`);
+    }
+    assert.deepEqual(report.errors, []);
+
+    const featurePage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    featurePage.on('pageerror', e => report.errors.push(e.message));
+    await featurePage.goto(baseUrl);
+    await featurePage.waitForFunction(() => !document.getElementById('run').disabled);
+    await featurePage.locator('#sidebar-hierarchy').click();
+    await featurePage.locator('#hierarchy-tree button').filter({ hasText: 'dut : counter' }).click();
+    assert.match(await featurePage.locator('#active-file').textContent(), /testbench\.v/);
+    assert.match(await featurePage.locator('#cursor').textContent(), /Ln 6,/);
+    await featurePage.locator('#sidebar-files').click();
+    const editor = featurePage.locator('.cm-content').first();
+    await editor.click();
+    await featurePage.keyboard.press('Control+A');
+    await featurePage.keyboard.insertText('module testbench;\n  broken ???;\nendmodule\n');
+    await featurePage.waitForFunction(() => /Problems \([1-9]/.test(document.querySelector('[data-panel="problems"]').textContent), null, { timeout: 30000 });
+    await editor.click(); await featurePage.keyboard.press('Control+A');
+    await featurePage.keyboard.insertText('`timescale 1ns/1ps\nmodule testbench;\nreg clk = 0;\nwire [3:0] count;\ncounter dut(.clk(clk), .reset(1\'b0), .count(count));\ninitial begin\n$dumpfile("wave.vcd");\n$dumpvars(0, testbench);\n#5 $finish;\nend\nendmodule\n');
+    await featurePage.waitForFunction(() => document.querySelector('[data-panel="problems"]').textContent === 'Problems', null, { timeout: 30000 });
+    await featurePage.keyboard.press('Shift+Alt+f');
+    await featurePage.waitForFunction(() => document.querySelector('.cm-content').textContent.includes('  reg clk'));
+    await featurePage.locator('#run').click();
+    await featurePage.waitForSelector('.wave-row[data-path="testbench.count"]', { timeout: 60000 });
+    await featurePage.waitForSelector('.cm-inline-val', { timeout: 30000 });
+    featurePage.once('dialog', dialog => dialog.accept('Audit group'));
+    await featurePage.locator('#wave-add-group').click();
+    assert.equal(await featurePage.locator('.wave-group').count(), 1);
+    featurePage.once('dialog', dialog => dialog.accept('testbench.count[3:1]'));
+    await featurePage.locator('#wave-add-slice').click();
+    assert.equal(await featurePage.locator('.wave-row[data-path="testbench.count[3:1]"]').count(), 1);
+    featurePage.once('dialog', dialog => dialog.accept('Audit view'));
+    await featurePage.locator('#wave-save-view').click();
+    await featurePage.locator('.wave-group button').click();
+    await featurePage.locator('#wave-views').selectOption('Audit view');
+    assert.ok(await featurePage.locator('.wave-row[data-path="testbench.count[3:1]"]').isVisible());
+    await featurePage.locator('#wave-delete-view').click();
+    report.stageB = { hierarchy: 'passed', liveLint: 'passed', inlineValues: 'passed', formatter: 'passed', waveformViews: 'passed' };
+    assert.deepEqual(report.errors, []);
+    await featurePage.close();
     console.log(JSON.stringify(report, null, 2));
   } finally {
     if (browser) await browser.close();

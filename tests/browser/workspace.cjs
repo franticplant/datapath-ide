@@ -1325,6 +1325,7 @@ const webRoot = join(__dirname, '../../web');
 
     // Pixel 8: hide the key row from the row itself, re-enable it from More, About from More.
     await page.setViewportSize({ width: 412, height: 915 });
+    await page.locator('button[data-view="code"]').click();
     await page.locator('#editor .cm-content').click();
     await page.waitForFunction(() => document.body.classList.contains('typing'));
     assert.equal(await page.locator('#keybar').isVisible(), true);

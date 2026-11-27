@@ -24059,6 +24059,31 @@ function createEditor(parent, onChange, onPosition, opts = {}) {
     },
     provide: (field) => EditorView.decorations.from(field)
   });
+  class InlineValue extends WidgetType {
+    constructor(text) {
+      super();
+      this.text = text;
+    }
+    eq(other) {
+      return this.text === other.text;
+    }
+    toDOM() {
+      const el = document.createElement("span");
+      el.className = "cm-inline-val";
+      el.textContent = this.text;
+      return el;
+    }
+  }
+  const inlineEffect = StateEffect.define();
+  const inlineField = StateField.define({
+    create: () => Decoration.none,
+    update(value, tr) {
+      value = value.map(tr.changes);
+      for (const effect of tr.effects) if (effect.is(inlineEffect)) value = effect.value;
+      return value;
+    },
+    provide: (field) => EditorView.decorations.from(field)
+  });
   let preferences = { fontSize: 14, tabWidth: 2, wrap: false, emacs: false };
   let filename = "";
   let suppressChange = false;
@@ -24128,6 +24153,10 @@ function createEditor(parent, onChange, onPosition, opts = {}) {
     }
   });
   const baseKeymap = Prec.high(keymap.of([
+    { key: "Shift-Alt-f", run: () => {
+      opts.onFormat?.();
+      return true;
+    } },
     { key: "Mod-Space", run: startCompletion },
     { key: "Tab", run: (view2) => completionStatus(view2.state) === "active" ? acceptCompletion(view2) : false },
     indentWithTab,
@@ -24157,6 +24186,7 @@ function createEditor(parent, onChange, onPosition, opts = {}) {
     autocompletion({ override: [completionSource], icons: false, activateOnTyping: true, defaultKeymap: true }),
     lintGutter(),
     lineMarks,
+    inlineField,
     wrapComp.of([]),
     indentComp.of(indentUnit.of("  ")),
     fontComp.of(EditorView.theme({ "&": { fontSize: "14px" } })),
@@ -24252,6 +24282,13 @@ function createEditor(parent, onChange, onPosition, opts = {}) {
       const target = view.state.doc.line(Math.max(1, Math.min(line, view.state.doc.lines)));
       view.dispatch({ selection: { anchor: target.from }, scrollIntoView: true });
       view.focus();
+    },
+    setInlineValues(entries) {
+      const marks2 = entries.filter((e) => e.line > 0 && e.line <= view.state.doc.lines).map((e) => Decoration.widget({ widget: new InlineValue(e.text), side: 1 }).range(view.state.doc.line(e.line).to));
+      view.dispatch({ effects: inlineEffect.of(Decoration.set(marks2, true)) });
+    },
+    replaceText(text) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
     },
     diagnostics(items) {
       const mapped = items.filter((item) => item.file === filename && item.line > 0 && item.line <= view.state.doc.lines).map((item) => {

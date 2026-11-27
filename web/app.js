@@ -1,3 +1,6 @@
+import { buildModuleHierarchy } from './hierarchy.js';
+import { computeInlineValues } from './inline-values.js';
+import { formatVerilog } from './verilog-format.js';
 import { installWaveform } from './waveform.js';
 import { EngineClient } from './engine-client.js';
 import { ConsoleBuffer } from './console-buffer.js';
@@ -34,6 +37,8 @@ const $ = id => document.getElementById(id);
 let files = Object.assign(Object.create(null), defaults);
 let current = 'design.v';
 let diagnostics = [];
+let lintSeq = 0, lintTimer = null, lintWorker = null, inlineTimer;
+let outputOpened = false;
 let simulationSettings = null;
 let hideExcluded = false;
 let folders = new Set();
@@ -285,7 +290,7 @@ function showInspectPopover(token, lineNumber, coords, filename = current) {
       waveform.selectSignal(sig.path);
       if (layout.getState().dockHidden) layout.update({ dockHidden: false });
       document.querySelector('[data-panel="waveform"]').click();
-      if (matchMedia('(max-width: 899px)').matches) selectView('waveform');
+      if (matchMedia('(max-width: 900px)').matches) selectView('waveform');
       hidePopover();
     };
   }
@@ -307,6 +312,7 @@ const groups = new EditorGroups($('editor-groups'), {
   createEditor: (host, { onChange, onPosition }) => createEditor(host, onChange, onPosition, {
     getCompletions: collectCompletions,
     onInspectToken: showInspectPopover,
+    onFormat: formatActive,
     onFocus: () => document.body.classList.add('typing'),
     onBlur: () => setTimeout(() => {
       if (!document.activeElement?.closest('.cm-editor')) document.body.classList.remove('typing');
@@ -325,6 +331,9 @@ const groups = new EditorGroups($('editor-groups'), {
     suggestModules();
     save();
     scheduleFsmRefresh();
+    renderHierarchy();
+    scheduleLint(name);
+    scheduleInline();
   },
   onPosition: (line, col, lineText, word) => {
     $('cursor').textContent = `Ln ${line}, Col ${col}`;
@@ -338,6 +347,7 @@ const groups = new EditorGroups($('editor-groups'), {
       save();
     }
     updateTitle();
+    scheduleInline();
   },
   onOpenMenu: actions => {
     const list = $('group-menu-list');
@@ -383,7 +393,7 @@ function openFile(name) {
   if (!Object.hasOwn(files, name)) return;
   current = name;
   groups.openFile(name);
-  if (matchMedia('(max-width: 899px)').matches) selectView('code');
+  if (matchMedia('(max-width: 900px)').matches) selectView('code');
   render();
   save();
   nav?.record();
@@ -400,6 +410,7 @@ function toggleBuildFile(path, include) {
 function render() {
   $('assemble').hidden = !Object.keys(files).some(isAsm);
   renderExplorerSection();
+  renderHierarchy();
   groups.refresh();
   groups.setDiagnosticsAll(diagnostics);
   simulationSettings?.render();
@@ -863,7 +874,7 @@ function loadShowcaseProject(id, { silent = false } = {}) {
   groups.removePaths(() => true, current);
   suggestModules();
   openFile(current);
-  if (!silent && !matchMedia('(max-width: 899px)').matches && !layout.getState().dockHidden && project.dockTab) {
+  if (!silent && !matchMedia('(max-width: 900px)').matches && !layout.getState().dockHidden && project.dockTab) {
     document.querySelector(`[data-panel="${project.dockTab}"]`)?.click();
   }
   schematic?.render();
@@ -892,7 +903,7 @@ function resetCleanWorkspace() {
   groups.removePaths(() => true, current);
   suggestModules();
   openFile(current);
-  if (!matchMedia('(max-width: 899px)').matches && !layout.getState().dockHidden) showPanel('console');
+  if (!matchMedia('(max-width: 900px)').matches && !layout.getState().dockHidden) showPanel('console');
   schematic?.render();
   save();
   storage.flush();
@@ -925,7 +936,8 @@ document.querySelectorAll('[data-template]').forEach(button => {
   };
 });
 
-document.querySelectorAll('[data-panel]').forEach(button => button.onclick = () => {
+document.querySelectorAll('[data-panel]').forEach(button => button.onclick = event => {
+  if (event.isTrusted && innerWidth > 900) outputOpened = true;
   document.querySelectorAll('[data-panel]').forEach(b => {
     b.classList.toggle('selected', b === button);
     b.setAttribute('aria-selected', String(b === button));
@@ -936,10 +948,11 @@ document.querySelectorAll('[data-panel]').forEach(button => button.onclick = () 
   if (button.dataset.panel === 'hw-state') hwState?.render();
   if (button.dataset.panel === 'board') board?.render();
   if (button.dataset.panel === 'waveform') waveform?.repaint();
+  if (innerWidth <= 900) setMobileView('console');
   nav?.record();
 });
 
-function selectView(view) {
+function setMobileView(view) {
   document.body.dataset.view = view;
   document.querySelectorAll('button[data-view]').forEach(item => {
     const selected = item.dataset.view === view;
@@ -947,7 +960,10 @@ function selectView(view) {
     if (selected) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   });
-  if (view === 'console' || view === 'waveform') document.querySelector(`[data-panel="${view}"]`).click();
+}
+function selectView(view) {
+  setMobileView(view);
+  if (view === 'console' || view === 'waveform') { document.querySelector(`[data-panel="${view}"]`).click(); setMobileView(view); }
   nav?.record();
 }
 document.querySelectorAll('button[data-view]').forEach(button => button.onclick = () => selectView(button.dataset.view));
@@ -1109,7 +1125,7 @@ let vkOverlay = false;
 if (VK) { try { VK.overlaysContent = true; vkOverlay = VK.overlaysContent === true; } catch { /* ignore */ } }
 const VIEWPORT_STATE = { fullH: window.innerHeight, width: window.innerWidth };
 function fitViewport() {
-  const narrow = window.matchMedia('(max-width: 899px)').matches;
+  const narrow = window.matchMedia('(max-width: 900px)').matches;
   const vv = window.visualViewport;
   const r = VK && VK.boundingRect;
   let h = window.innerHeight;
@@ -1193,7 +1209,7 @@ groups.restore(current);
 render();
 suggestModules();
 renderKeybar();
-const layout = installLayout(groups, () => requestAnimationFrame(updateKbFade));
+const layout = installLayout(groups, () => requestAnimationFrame(() => { updateKbFade(); refreshInline(); }));
 fitViewport();
 simulationSettings = installSimSettings(() => files, () => excluded, (path, isExcluded) => {
   if (isExcluded) excluded.add(path);
@@ -1204,7 +1220,8 @@ simulationSettings = installSimSettings(() => files, () => excluded, (path, isEx
 });
 waveform = installWaveform(showToast);
 // Re-extract FSM encodings from the current RTL whenever a trace (run, test or opened VCD) loads.
-waveform.store.subscribe((state, kind) => { if (kind === 'trace' && state.trace) refreshFsmStates(); });
+waveform.store.subscribe((state, kind) => { if (kind === 'trace' && state.trace) refreshFsmStates(); if (['trace', 'cursor', 'layout'].includes(kind)) scheduleInline(); });
+$('wave-radix').addEventListener('change', scheduleInline);
 const log = new ConsoleBuffer();
 
 function engineStatus(text, stateClass = '') {
@@ -1346,7 +1363,7 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
         if (event.memTrace) waveform.store.loadMemTrace(event.memTrace);
         if (!suppressWave && layout.getState().autoSwitchWave) {
           document.querySelector('[data-panel="waveform"]').click();
-          if (matchMedia('(max-width: 899px)').matches) selectView('waveform');
+          if (matchMedia('(max-width: 900px)').matches) selectView('waveform');
         } else if (!suppressWave) {
           showToast(`Waveform ready (${event.vcdFiles[0].path})`);
         }
@@ -1365,7 +1382,7 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
     renderProblems(diagnostics, event.message);
     if (layout.getState().dockHidden) layout.update({ mode: 'custom', dockHidden: false });
     document.querySelector('[data-panel="problems"]').click();
-    if (matchMedia('(max-width: 899px)').matches) {
+    if (matchMedia('(max-width: 900px)').matches) {
       selectView('console');
       document.querySelector('[data-panel="problems"]').click();
     }
@@ -1394,6 +1411,7 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
 
 function execute(type, { suppressAutoWave = false, quiet = false } = {}) {
   if (!quiet) dismissFeatured();
+  cancelLint();
   if (!engine.ready || engine.activeRunId !== null) return false;
   let settings;
   try {
@@ -1404,7 +1422,7 @@ function execute(type, { suppressAutoWave = false, quiet = false } = {}) {
     log.append(error.message);
     showConsole();
     document.querySelector('[data-panel="console"]').click();
-    if (matchMedia('(max-width: 899px)').matches) selectView('console');
+    if (matchMedia('(max-width: 900px)').matches) selectView('console');
     return false;
   }
   if (!assembleBeforeBuild()) return false;
@@ -1422,7 +1440,7 @@ function execute(type, { suppressAutoWave = false, quiet = false } = {}) {
   if (!quiet) {
     if (layout.getState().dockHidden) layout.update({ mode: 'custom', dockHidden: false });
     document.querySelector('[data-panel="console"]').click();
-    if (matchMedia('(max-width: 899px)').matches) selectView('console');
+    if (matchMedia('(max-width: 900px)').matches) selectView('console');
   }
   try {
     engine.run({ type, files: { ...files }, ...settings, topModule: $('top-module').value, standard: $('standard').value });
@@ -1474,6 +1492,8 @@ function buildCommands() {
     { label: `Toggle Auto-Clear Console (${s.autoClearConsole ? 'On' : 'Off'})`, hint: '', run: () => layout.update({ autoClearConsole: !s.autoClearConsole }) },
     { label: `Toggle Hide Excluded Files (${hideExcluded ? 'On' : 'Off'})`, hint: '', run: () => $('toggle-excluded-visibility').click() },
     ...THEME_ORDER.map(id => ({ label: `Theme: ${THEMES[id].name}`, hint: '', run: () => layout.update({ theme: id }) })),
+    { label: 'Format Verilog', hint: 'Shift+Alt+F', run: formatActive },
+    { label: `Toggle Inline Values (${s.inlineValues ? 'On' : 'Off'})`, hint: '', run: () => layout.update({ inlineValues: !s.inlineValues }) },
     { label: 'Compile Project', hint: 'Ctrl+B', run: () => { if (!$('compile').disabled) execute('compile'); } },
     { label: 'Run Simulation', hint: 'Ctrl+Enter', run: () => { if (!$('run').disabled) execute('run'); } },
     { label: 'Stop Simulation', hint: 'Shift+F5', run: () => { if (!$('stop').disabled) engine.stop(); } },
@@ -1597,6 +1617,7 @@ function refreshFsmStates() {
   const sources = Object.fromEntries(Object.entries(files).filter(([path]) => /\.(?:v|sv|vh|svh)$/i.test(path) && !excluded.has(path)));
   fsmMap = extractFsmStates(sources);
   waveform.setFsmMap(fsmMap);
+  scheduleInline();
 }
 let fsmTimer = null;
 function scheduleFsmRefresh() {
@@ -1605,10 +1626,10 @@ function scheduleFsmRefresh() {
 }
 
 function showPanel(name) {
+  outputOpened = true;
   if (layout.getState().dockHidden) layout.update({ mode: 'custom', dockHidden: false });
   document.querySelector(`[data-panel="${name}"]`).click();
-  if (matchMedia('(max-width: 899px)').matches) selectView(name === 'waveform' ? 'waveform' : 'console');
-  document.querySelector(`[data-panel="${name}"]`).click();
+  if (innerWidth <= 900) setMobileView('console');
 }
 
 // Jump to file:line (Problems, Search, F12, Schematic): always a new history entry so Back returns here.
@@ -1616,7 +1637,7 @@ function openAt(file, line) {
   if (!Object.hasOwn(files, file)) return;
   current = file;
   groups.jump(file, line);
-  if (matchMedia('(max-width: 899px)').matches) selectView('code');
+  if (matchMedia('(max-width: 900px)').matches) selectView('code');
   renderExplorerSection();
   save();
   nav?.record({ force: true });
@@ -1693,15 +1714,15 @@ schematic = installSchematic({
 
 // ---------------------------------------------------------------- Back / Forward history
 const selectedPanel = () => document.querySelector('[data-panel].selected')?.dataset.panel || 'console';
-const isNarrow = () => matchMedia('(max-width: 899px)').matches;
+const isNarrow = () => matchMedia('(max-width: 900px)').matches;
 function restoreNav(state) {
   if (state.file && Object.hasOwn(files, state.file)) {
     if (state.file !== current) { current = state.file; groups.openFile(state.file); }
     if (state.line && (!isNarrow() || state.view === 'code')) groups.jump(state.file, state.line);
     renderExplorerSection();
   }
-  if (isNarrow() && state.view) selectView(state.view);
   if (state.panel) document.querySelector(`[data-panel="${state.panel}"]`)?.click();
+  if (isNarrow() && state.view) setMobileView(state.view);
   if (state.crumbs?.length) schematic.navigateTo(state.crumbs);
   save();
 }
@@ -1818,3 +1839,73 @@ const deepLink = parseDeepLink(location.search);
 if (deepLink?.kind === 'tour') tour.start(deepLink.index);
 else if (deepLink?.kind === 'showcase') tour.launchShowcaseLive(deepLink.id);
 else if (!hadSavedWorkspace && localStorage.getItem(FEATURED_DISMISSED_KEY) !== '1') tour.showFeatured();
+
+// Background compiler uses its own worker so it never changes foreground output or run state.
+function cancelLint() { ++lintSeq; clearTimeout(lintTimer); lintWorker?.terminate(); lintWorker = null; }
+function scheduleLint(name) {
+  cancelLint();
+  if (!/\.(?:v|sv)$/i.test(name) || !layout.getState().liveLint) return;
+  const seq = lintSeq;
+  lintTimer = setTimeout(() => {
+    if (engine.activeRunId !== null || board?.isLive() || !layout.getState().liveLint) return;
+    let settings;
+    try { settings = simulationSettings.snapshot(); } catch { return; }
+    lintWorker = new Worker('./simulator-worker.js', { type: 'module' });
+    lintWorker.onmessage = ({ data }) => {
+      if (data.type !== 'lint-result') return;
+      if (seq === lintSeq && engine.activeRunId === null && !board?.isLive() && layout.getState().liveLint) { diagnostics = data.items; renderProblems(diagnostics); }
+      lintWorker?.terminate(); lintWorker = null;
+    };
+    lintWorker.postMessage({ type: 'lint', runId: seq, files: { ...files }, ...settings, topModule: $('top-module').value, standard: $('standard').value });
+  }, 650);
+}
+function scheduleInline() { clearTimeout(inlineTimer); inlineTimer = setTimeout(refreshInline, 0); }
+function refreshInline() {
+  if (!waveform) return;
+  const state = waveform.store.getState();
+  for (const group of groups.groups) {
+    const editor = group.editor;
+    const name = editor.getFilename();
+    const entries = layout.getState().inlineValues && /\.(?:v|sv)$/i.test(name) && state.trace
+      ? computeInlineValues(files[name] || '', state.trace, waveform.store.currentTime(), { radix: $('wave-radix').value, fsmMap }) : [];
+    editor.setInlineValues(entries);
+  }
+}
+function formatActive() {
+  const editor = groups.activeEditor();
+  const name = editor?.getFilename();
+  if (!name || !/\.(?:v|sv)$/i.test(name)) return;
+  editor.replaceText(formatVerilog(files[name], { tabWidth: layout.getState().tabWidth }));
+}
+$('format-verilog').onclick = formatActive;
+function renderHierarchy() {
+  const target = $('hierarchy-tree');
+  if (!target) return;
+  target.replaceChildren();
+  for (const entry of buildModuleHierarchy(files, excluded).flat) {
+    const button = document.createElement('button');
+    button.className = 'hierarchy-item';
+    button.style.paddingLeft = `${8 + entry.depth * 14}px`;
+    const loc = entry.instance || entry;
+    button.textContent = `${entry.instance ? `${entry.instance.instance} : ` : ''}${entry.name}${entry.cyclic ? ' ↻' : ''} — ${loc.file}:${loc.line}`;
+    button.onclick = () => openAt(loc.file, loc.line);
+    target.append(button);
+  }
+}
+for (const name of ['files', 'hierarchy']) $('sidebar-' + name).onclick = () => {
+  $('files').hidden = name !== 'files'; $('hierarchy-tree').hidden = name !== 'hierarchy';
+  $('sidebar-files').setAttribute('aria-pressed', String(name === 'files'));
+  $('sidebar-hierarchy').setAttribute('aria-pressed', String(name === 'hierarchy'));
+  if (name === 'hierarchy') renderHierarchy();
+};
+$('toggle-dock').addEventListener('click', () => { if (innerWidth > 900 && !layout.getState().dockHidden) outputOpened = true; });
+let wasPhone = innerWidth <= 900;
+window.addEventListener('resize', () => {
+  const phone = innerWidth <= 900;
+  if (phone && !wasPhone && !layout.getState().dockHidden) {
+    const selected = document.querySelector('[data-panel].selected')?.dataset.panel;
+    if (selected && (selected !== 'console' || outputOpened)) setMobileView('console');
+  }
+  wasPhone = phone;
+});
+if (location.protocol === 'http:' || location.protocol === 'https:') navigator.serviceWorker?.register('./sw.js').catch(() => {});

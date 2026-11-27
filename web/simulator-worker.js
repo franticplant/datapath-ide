@@ -97,7 +97,7 @@ async function buildProgram(data, buildOptions, phase, buildLines, runId) {
   compiler.FS.writeFile('/config', `basedir:/\nmodule:system.vpi\nmodule:v2005_math.vpi\ngeneration:${data.standard}\ngeneration:${data.specify ? 'specify' : 'no-specify'}\nwarnings:${[...warningFlags].join('')}\n${parameters.map(value => `defparam:${value}\n`).join('')}flag:DLL=vvp.tgt\nfunctor:cprop\nfunctor:nodangle\n${top ? `root:${top}\n` : ''}out:/program.vvp\n`);
   code = compiler.callMain(['-C/config', '--', '/preprocessed.v']);
   const diagnostics = parseDiagnostics(buildLines);
-  if (diagnostics.length) self.postMessage({ type: 'diagnostics', runId, items: diagnostics });
+  if (diagnostics.length && data.type !== 'lint') self.postMessage({ type: 'diagnostics', runId, items: diagnostics });
   if (code) throw new Error(`Compilation failed (exit ${code}).`);
   return { files, program: compiler.FS.readFile('/program.vvp'), plusargs };
 }
@@ -198,6 +198,13 @@ async function handleLive(data) {
 self.onmessage = async ({ data }) => {
   if (data.type === 'init') { self.postMessage({ type: 'ready', version: 'Icarus Verilog 13.0', capabilities: { cooperativeStop: false, liveSessions: true } }); return; }
   if (typeof data.type === 'string' && data.type.startsWith('live-')) { await handleLive(data); return; }
+  if (data.type === 'lint') {
+    const lines = [];
+    const log = line => { if (lines.length < 2000) lines.push(line); };
+    try { await buildProgram(data, () => ({ print: log, printErr: log }), () => {}, lines, data.runId); } catch { /* Diagnostics carry compiler failures. */ }
+    self.postMessage({ type: 'lint-result', runId: data.runId, items: parseDiagnostics(lines) });
+    return;
+  }
   if (data.type !== 'run' && data.type !== 'compile') return;
   const { runId } = data;
   const outputLimit = Number.isInteger(data.outputCap) && data.outputCap >= 4096 && data.outputCap <= 8192 * 1024 ? data.outputCap : MAX_OUTPUT;

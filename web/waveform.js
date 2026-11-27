@@ -1,4 +1,6 @@
 // Waveform view: DOM rows (labels, radix, drag reorder) with DPR-scaled <canvas> traces that only paint the visible time window.
+import { parseSliceSpec, sliceBits } from './wave-utils.js';
+export { parseSliceSpec, sliceBits } from './wave-utils.js';
 import { createSimTrace } from './sim-trace.js';
 import { stateNameFor } from './fsm-states.js';
 
@@ -77,6 +79,28 @@ export function installWaveform(onStatusCopy = null) {
     }
   } catch { /* Ignore invalid wave prefs. */ }
 
+  const groups = new Map();
+  const slices = new Map();
+  const viewsKey = 'datapath.wave-views.v1';
+  let views = {};
+  try { views = JSON.parse(localStorage.getItem(viewsKey)) || {}; } catch { /* Invalid saved views. */ }
+  function refreshViews() {
+    const select = $('wave-views'); const selected = select.value;
+    select.replaceChildren(new Option('Select view', ''));
+    Object.keys(views).sort().forEach(name => select.add(new Option(name, name)));
+    select.value = selected;
+  }
+  function addSlice(spec) {
+    const parsed = parseSliceSpec(spec); if (!parsed || !S.trace) return false;
+    const source = store.signalByPath(parsed.signal) || S.trace.signals.find(s => s.path.split('.').at(-1) === parsed.signal);
+    if (!source || parsed.msb >= source.width) return false;
+    const path = `${source.path}[${parsed.msb}${parsed.msb === parsed.lsb ? '' : ':' + parsed.lsb}]`;
+    if (store.signalByPath(path)) return true;
+    const signal = { ...source, path, width: parsed.msb - parsed.lsb + 1, changes: source.changes.map(c => ({ time: c.time, value: sliceBits(c.value, source.width, parsed.msb, parsed.lsb) })) };
+    S.trace.signals.push(signal); S.order.push(path); S.visible.add(path); slices.set(path, `${source.path}[${parsed.msb}:${parsed.lsb}]`);
+    return true;
+  }
+  function saveViews() { try { localStorage.setItem(viewsKey, JSON.stringify(views)); } catch { $('wave-error').textContent = 'Could not save views'; } refreshViews(); }
   let width = BASE_WIDTH;
   let dragSource = null;
   let frame = 0;
@@ -211,6 +235,17 @@ export function installWaveform(onStatusCopy = null) {
       const x1 = Math.round(times[i] * scale - offset);
       const right = Math.round(Math.min((i + 1 < times.length ? times[i + 1] * scale : width) - offset, endX));
       const color = valueColor(value, colors);
+      if (/x/.test(value) && right > x1) {
+        if (pathColor) { ctx.stroke(); pathColor = null; }
+        const left = Math.max(0, x1), edge = Math.min(visibleWidth, right);
+        if (edge > left) {
+          ctx.save(); ctx.beginPath(); ctx.rect(left, 6, edge - left, 18); ctx.clip();
+          ctx.globalAlpha = 0.12; ctx.fillStyle = color; ctx.fillRect(left, 6, edge - left, 18);
+          ctx.globalAlpha = 0.45; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash([]); ctx.beginPath();
+          for (let x = left - 18; x < edge; x += 6) { ctx.moveTo(x, 24); ctx.lineTo(x + 18, 6); } ctx.stroke(); ctx.restore();
+        }
+      }
+      if (!oneBit && /z/.test(value)) { usePath(color, true); ctx.moveTo(x1, 15); ctx.lineTo(right, 15); }
       if (oneBit) {
         const y = levelY(value);
         ctx.fillStyle = color;
@@ -373,7 +408,21 @@ export function installWaveform(onStatusCopy = null) {
     const fragment = document.createDocumentFragment();
     fragment.append(ruler);
 
+    let collapsed = false;
     for (const path of S.order) {
+      if (groups.has(path)) {
+        const group = groups.get(path); collapsed = group.collapsed;
+        const row = document.createElement('div'); row.className = 'wave-row wave-group';
+        const label = document.createElement('button'); label.className = 'wave-label'; label.draggable = true;
+        label.textContent = `${group.collapsed ? '▸' : '▾'} ${group.name}`;
+        label.onclick = () => { group.collapsed = !group.collapsed; buildRows(); };
+        label.ondragstart = event => { dragSource = path; event.dataTransfer.setData('text/plain', path); };
+        label.ondragover = event => { if (dragSource && dragSource !== path) event.preventDefault(); };
+        label.ondrop = event => { event.preventDefault(); if (dragSource && dragSource !== path) store.moveSignal(dragSource, 0, path); dragSource = null; };
+        label.ondragend = () => { dragSource = null; };
+        row.append(label); fragment.append(row); continue;
+      }
+      if (collapsed) continue;
       if (!S.visible.has(path) || !store.signalByPath(path)) continue;
       const row = document.createElement('div');
       row.className = 'wave-row';
@@ -483,7 +532,7 @@ export function installWaveform(onStatusCopy = null) {
     if (!S.trace) return;
     const filter = $('signal-filter').value.trim().toLowerCase();
     const root = { children: new Map(), signals: [] };
-    for (const path of S.order.filter(name => name.toLowerCase().includes(filter))) {
+    for (const path of S.order.filter(name => !groups.has(name) && name.toLowerCase().includes(filter))) {
       const parts = path.split('.');
       const name = parts.pop();
       let node = root;
@@ -633,6 +682,39 @@ export function installWaveform(onStatusCopy = null) {
     return time;
   }
 
+  $('wave-add-group').onclick = () => {
+    if (!S.trace) return;
+    const name = prompt('Group name', 'Group'); if (name === null) return;
+    const id = `@group:${Date.now()}:${Math.random()}`;
+    groups.set(id, { name: name.trim() || 'Group', collapsed: false });
+    const index = S.selected ? S.order.indexOf(S.selected) : -1;
+    S.order.splice(index < 0 ? S.order.length : index, 0, id); buildRows();
+  };
+  $('wave-add-slice').onclick = () => {
+    if (!S.trace) return;
+    const source = store.signalByPath(S.selected);
+    const spec = prompt('Signal slice', source && source.width > 1 ? `${source.path}[${source.width - 1}:0]` : '');
+    if (spec === null) return;
+    if (!addSlice(spec)) { $('wave-error').textContent = 'Enter a valid slice of a loaded signal.'; return; }
+    $('wave-error').textContent = ''; renderSignalTree(); buildRows();
+  };
+  $('wave-save-view').onclick = () => {
+    if (!S.trace) return;
+    const name = prompt('View name'); if (!name?.trim()) return;
+    views[name.trim()] = { order: [...S.order], visible: [...S.visible], groups: [...groups].map(([id, group]) => [id, { ...group }]), slices: [...slices], overrides: [...S.overrides], prefs: { ...prefs } };
+    saveViews(); $('wave-views').value = name.trim();
+  };
+  $('wave-delete-view').onclick = () => { const name = $('wave-views').value; if (!name) return; delete views[name]; saveViews(); };
+  $('wave-views').onchange = () => {
+    const view = views[$('wave-views').value]; if (!view || !S.trace) return;
+    groups.clear(); for (const [id, group] of view.groups || []) groups.set(id, { ...group });
+    for (const [, spec] of view.slices || []) addSlice(spec);
+    const allowed = new Set([...S.trace.signals.map(s => s.path), ...groups.keys()]);
+    S.order = [...(view.order || []).filter(path => allowed.has(path)), ...S.order.filter(path => !view.order?.includes(path) && !groups.has(path))];
+    S.visible = new Set((view.visible || []).filter(path => allowed.has(path)));
+    S.overrides = new Map(view.overrides || []); prefs = { ...prefs, ...view.prefs }; savePrefs(); applyPrefsUI(); renderSignalTree(); buildRows(); renderInspector();
+  };
+  refreshViews();
   $('open-vcd').onclick = () => $('vcd-input').click();
   $('download-vcd').onclick = () => {
     if (!S.rawVcd) return;

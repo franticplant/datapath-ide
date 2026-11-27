@@ -1,6 +1,6 @@
 import { basicSetup } from 'codemirror';
 import { EditorState, Compartment, Prec, StateEffect, StateField } from '@codemirror/state';
-import { EditorView, keymap, Decoration } from '@codemirror/view';
+import { EditorView, keymap, Decoration, WidgetType } from '@codemirror/view';
 import { StreamLanguage, indentUnit, syntaxHighlighting, HighlightStyle, bracketMatching, foldService } from '@codemirror/language';
 import { indentWithTab, toggleComment, undo as cmUndo, redo as cmRedo, indentMore, indentLess, cursorCharLeft, cursorCharRight, cursorLineUp, cursorLineDown, cursorLineBoundaryBackward, cursorLineEnd, cursorGroupForward, cursorGroupBackward, cursorDocStart, cursorDocEnd } from '@codemirror/commands';
 import { autocompletion, completionKeymap, startCompletion, closeCompletion, acceptCompletion, completionStatus, snippetCompletion } from '@codemirror/autocomplete';
@@ -221,6 +221,22 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
     provide: field => EditorView.decorations.from(field),
   });
 
+  class InlineValue extends WidgetType {
+    constructor(text) { super(); this.text = text; }
+    eq(other) { return this.text === other.text; }
+    toDOM() { const el = document.createElement('span'); el.className = 'cm-inline-val'; el.textContent = this.text; return el; }
+  }
+  const inlineEffect = StateEffect.define();
+  const inlineField = StateField.define({
+    create: () => Decoration.none,
+    update(value, tr) {
+      value = value.map(tr.changes);
+      for (const effect of tr.effects) if (effect.is(inlineEffect)) value = effect.value;
+      return value;
+    },
+    provide: field => EditorView.decorations.from(field),
+  });
+
   let preferences = { fontSize: 14, tabWidth: 2, wrap: false, emacs: false };
   let filename = '';
   let suppressChange = false;
@@ -289,6 +305,7 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
   });
 
   const baseKeymap = Prec.high(keymap.of([
+    { key: 'Shift-Alt-f', run: () => { opts.onFormat?.(); return true; } },
     { key: 'Mod-Space', run: startCompletion },
     { key: 'Tab', run: view => completionStatus(view.state) === 'active' ? acceptCompletion(view) : false },
     indentWithTab,
@@ -315,6 +332,7 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
     autocompletion({ override: [completionSource], icons: false, activateOnTyping: true, defaultKeymap: true }),
     lintGutter(),
     lineMarks,
+    inlineField,
     wrapComp.of([]),
     indentComp.of(indentUnit.of('  ')),
     fontComp.of(EditorView.theme({ '&': { fontSize: '14px' } })),
@@ -406,6 +424,11 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
       view.dispatch({ selection: { anchor: target.from }, scrollIntoView: true });
       view.focus();
     },
+    setInlineValues(entries) {
+      const marks = entries.filter(e => e.line > 0 && e.line <= view.state.doc.lines).map(e => Decoration.widget({ widget: new InlineValue(e.text), side: 1 }).range(view.state.doc.line(e.line).to));
+      view.dispatch({ effects: inlineEffect.of(Decoration.set(marks, true)) });
+    },
+    replaceText(text) { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }); },
     diagnostics(items) {
       const mapped = items.filter(item => item.file === filename && item.line > 0 && item.line <= view.state.doc.lines).map(item => {
         const line = view.state.doc.line(item.line);
