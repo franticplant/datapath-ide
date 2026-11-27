@@ -12,17 +12,12 @@ USE_MVM    ?= $(shell command -v mvm >/dev/null 2>&1 && echo 1 || echo 0)
 ifeq ($(USE_MVM),1)
 NODE   := mvm run -i $(NODE_IMAGE) --
 PW     := mvm run -i $(PW_IMAGE) -u $(shell id -u):$(shell id -g) --
-# krun cannot connect to ephemeral loopback ports; keep these tests in plain offline containers.
-NODE_LOOPBACK := podman run --rm --network=none -v "$(CURDIR):/src:ro,z" -w /src $(NODE_IMAGE)
-PW_LOOPBACK   := podman run --rm --network=none --shm-size=1g -u $(shell id -u):$(shell id -g) -v "$(CURDIR):/src:ro,z" -w /src $(PW_IMAGE)
 BUNDLE := mvm build node -w build --
 SYNC   := mvm run -i $(NODE_IMAGE) -p $(PORT):$(PORT) -w $(WORKSPACE) --
 SERVE  := mvm run -i $(PY_IMAGE) -p $(PORT):$(PORT) -- python3 -m http.server $(PORT) --bind 0.0.0.0 --directory web
 else
 NODE   :=
 PW     :=
-NODE_LOOPBACK :=
-PW_LOOPBACK   :=
 BUNDLE :=
 SYNC   :=
 SERVE  := python3 -m http.server $(PORT) --bind 127.0.0.1 --directory web
@@ -64,8 +59,9 @@ test-browser: ## Playwright end-to-end suite (sections 1-20)
 test-ux: ## Playwright responsive UX scenario audit
 	$(PW) node tests/browser/ux-vibe-check.cjs
 
-test-mcp: ## Bridge protocol and browser sync tests
-	$(NODE_LOOPBACK) node tests/unit/mcp-bridge.test.mjs && $(PW_LOOPBACK) node tests/browser/mcp-sync.cjs
+test-mcp: ## Self-hosted sync & MCP bridge unit + 2-tab Playwright E2E
+	$(NODE) node tests/unit/mcp-bridge.test.mjs
+	$(PW) node tests/browser/mcp-sync.cjs
 
 check: check-assets check-paths ## Static checks: shipped assets and Pages-safe paths
 

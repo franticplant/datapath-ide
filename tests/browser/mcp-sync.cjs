@@ -22,7 +22,7 @@ const launchOptions = { ...(chromiumPath ? { executablePath: chromiumPath } : {}
     await writeFile(join(workspaceDir, 'design.v'), initial);
     await writeFile(join(workspaceDir, 'testbench.v'), testbench);
     const { startBridgeServer } = await import(pathToFileURL(resolve(__dirname, '../../server/bridge.mjs')).href);
-    bridge = await startBridgeServer({ port: 0, host: '127.0.0.1', workspaceDir, webDir: resolve(__dirname, '../../web'), pollMs: 100, quiet: true });
+    bridge = await startBridgeServer({ port: Number(process.env.MCP_SYNC_PORT || 18580), host: '127.0.0.1', workspaceDir, webDir: resolve(__dirname, '../../web'), pollMs: 100, quiet: true });
     browser = await chromium.launch(launchOptions);
     const laptop = await browser.newPage({ viewport: { width: 1280, height: 720 } });
     const phone = await browser.newPage({ viewport: { width: 412, height: 915 } });
