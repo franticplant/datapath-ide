@@ -93,6 +93,15 @@
  	cerr << "error: Failed to open '" << path << "' because:" << endl;
 --- a/synth2.cc
 +++ b/synth2.cc
+@@ -862,7 +862,7 @@
+ 	// If the sel_width can select more than just the explicit
+ 	// guard values, and there is a default statement, then adjust
+ 	// the sel_need to allow for the implicit selections.
+-      if (default_statement && (sel_width > sel_need))
++      if (sel_width > sel_need)
+ 	    sel_need += 1;
+ 
+ 	// The mux size is always an exact power of 2.
 @@ -2233,12 +2233,28 @@
  
  	/* Create shared pullup and pulldown nodes (if they don't already

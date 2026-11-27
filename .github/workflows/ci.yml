@@ -41,6 +41,9 @@ jobs:
           node tests/unit/stage5.test.mjs
           node tests/unit/tour.test.mjs
 
+      - name: Correctness suites
+        run: make test-correctness USE_MVM=0
+
       - name: Install dependencies
         run: npm ci --ignore-scripts
 

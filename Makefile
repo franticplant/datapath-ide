@@ -26,7 +26,7 @@ REQUIRED_ASSETS := web/index.html web/favicon.svg web/style.css web/app.js \
   web/engine/vvp.js web/engine/vvp.wasm web/engine/COPYING.icarus \
   $(addprefix web/vendor/,$(VENDOR_FILES))
 
-.PHONY: help serve test test-unit test-smoke test-browser check check-assets check-paths bundle check-bundle clean
+.PHONY: help serve test test-unit test-smoke test-correctness test-browser check check-assets check-paths bundle check-bundle clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -35,13 +35,16 @@ serve: ## Serve web/ on http://127.0.0.1:$(PORT)/
 	@echo "Datapath Studio on http://127.0.0.1:$(PORT)/"
 	$(SERVE)
 
-test: check test-unit test-smoke test-browser ## Run every check (what CI runs)
+test: check test-unit test-smoke test-correctness test-browser ## Run every check (what CI runs)
 
 test-unit: ## Unit tests (assembler, decoder, FSM, themes, showcase, history, tour)
 	$(NODE) sh -c 'node tests/unit/stage4.test.mjs && node tests/unit/stage5.test.mjs && node tests/unit/tour.test.mjs'
 
 test-smoke: ## Icarus WASM smoke test against web/engine (WASM_DIR=build/wasm for a fresh build)
 	$(NODE) node engine/smoke.mjs
+
+test-correctness: ## Engine, netlist equivalence, Live DUT differential, MIPS oracle and VCD spec suites
+	$(NODE) sh -c 'for f in tests/correctness/*.test.mjs; do node "$$f" || exit 1; done'
 
 test-browser: ## Playwright end-to-end suite (sections 1-20)
 	$(PW) node tests/browser/workspace.cjs

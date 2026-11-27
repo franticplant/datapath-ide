@@ -23,7 +23,10 @@ export function parseVcd(input) {
     }
     if (inHeader && token === '$enddefinitions') { inHeader = false; continue; }
     if (inHeader) continue;
+    if (token === '$comment') { while (++i < tokens.length && tokens[i] !== '$end'); continue; }
+    if (token === '$dumpvars' || token === '$dumpoff' || token === '$dumpon' || token === '$dumpall' || token === '$end') continue;
     if (token[0] === '#') { if (!/^#\d+$/.test(token)) throw new Error('Invalid VCD timestamp'); time = BigInt(token.slice(1)); continue; }
+    if (/^[rR]/.test(token)) { i++; continue; }
     let id; let value;
     if (/^[01xXzZ]/.test(token)) { value = token[0].toLowerCase(); id = token.slice(1); }
     else if (/^[bB][01xXzZ]+$/.test(token)) { value = token.slice(1).toLowerCase(); id = tokens[++i]; }

@@ -555,6 +555,10 @@ std::string emit_module(ivl_scope_t module, bool top)
 			cell.pins.push_back(out("Y", ivl_lpm_q(lpm)));
 		  } else {
 			cell.type = lpm_cell_type(lpm);
+			if (ivl_lpm_signed(lpm)) {
+			      cell.params.push_back({ "A_SIGNED", quote(binary32(1)) });
+			      cell.params.push_back({ "B_SIGNED", quote(binary32(1)) });
+			}
 			unsigned inputs = 0;
 			switch (type) {
 			    case IVL_LPM_RE_AND: case IVL_LPM_RE_OR: case IVL_LPM_RE_XOR: case IVL_LPM_RE_NAND:
