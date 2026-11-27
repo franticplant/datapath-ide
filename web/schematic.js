@@ -1112,7 +1112,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     const items = path.hasCombLoop ? (path.loopCells || []).map(cell => ({ cell, type: 'loop' })) : path.steps || [];
     for (const step of items) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'chip';
-      button.textContent = `${displayLabel(step.label || step.cell)} (${displayLabel(step.type)})${step.cumDepth != null ? ` · ${step.cumDepth}` : ''}`;
+      const head = step.label ? displayLabel(step.label) : `${displayLabel(step.cell)} (${displayLabel(step.type)})`;
+      button.textContent = `${head}${step.cumDepth != null ? ` · ${step.cumDepth}` : ''}`;
       button.dataset.cell = step.cell;
       const id = `cell:${step.cell}`; button.disabled = !index?.nodes.has(id);
       button.onclick = () => { fittedToCanvas = false; focusMatch({ kind: 'node', id }); };

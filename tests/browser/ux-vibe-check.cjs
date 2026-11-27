@@ -259,6 +259,7 @@ const box = async loc => {
     await page.waitForSelector('#schem-critpath-banner:not([hidden])');
     assert.match(await page.locator('#schem-critpath-banner').textContent(), /Depth [1-9]/);
     assert.doesNotMatch(await page.locator('#schem-critpath-banner').textContent(), /\$_ivl_/);
+    assert.doesNotMatch(await page.locator('#schem-critpath-banner').textContent(), /\((\w+)\)\s*\(\1\)/);
     assert.ok(await page.locator('.schem-cell.is-critpath').count() > 0);
     for (const [name, viewport] of [['stageCLaptop', { width: 1280, height: 720 }], ['stageCPhone', { width: 412, height: 915 }]]) {
       await page.setViewportSize(viewport);
