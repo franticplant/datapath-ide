@@ -646,5 +646,77 @@ await check('CLI: node server/bridge.mjs serves, honours --token/--quiet-free ba
   assert.match(err, /SIGTERM: shutting down/);
 });
 
+await check('token file / systemd credential: used verbatim, never written or logged, bad files refused', async () => {
+  const dir = await tempDir('dp-cred-');
+  const secret = 'c'.repeat(64);
+  await writeFile(join(dir, 'token'), `${secret}\n`, { mode: 0o600 });
+  const ws1 = join(dir, 'ws1');
+  const viaFile = await onTestPort(port => startBridgeServer({ port, host: '127.0.0.1', workspaceDir: ws1, tokenFile: join(dir, 'token'), pollMs: 0, quiet: true }));
+  assert.equal(viaFile.token, secret);
+  assert.equal((await mcp(viaFile, 'ping')).status, 200);
+  await viaFile.close();
+  await assert.rejects(stat(join(ws1, '.bridge-token')), 'a token file is never copied into the workspace');
+  await assert.rejects(onTestPort(port => startBridgeServer({ port, workspaceDir: ws1, tokenFile: join(dir, 'missing'), quiet: true })), /Cannot read token file/);
+  await writeFile(join(dir, 'short'), 'abc\n');
+  await assert.rejects(onTestPort(port => startBridgeServer({ port, workspaceDir: ws1, tokenFile: join(dir, 'short'), quiet: true })), /at least 32 hex/);
+  await mkdir(join(dir, 'creds'));
+  await writeFile(join(dir, 'creds', 'bridge-token'), secret);
+  process.env.CREDENTIALS_DIRECTORY = join(dir, 'creds');
+  try {
+    const ws2 = join(dir, 'ws2');
+    const viaCred = await onTestPort(port => startBridgeServer({ port, host: '127.0.0.1', workspaceDir: ws2, pollMs: 0, quiet: true }));
+    assert.equal(viaCred.token, secret);
+    await viaCred.close();
+    await assert.rejects(stat(join(ws2, '.bridge-token')));
+  } finally { delete process.env.CREDENTIALS_DIRECTORY; }
+});
+
+await check('--no-wasm: Icarus tools hidden and refused, linter still runs without the compile step', async () => {
+  const dir = await tempDir('dp-nowasm-');
+  await writeFile(join(dir, 'a.v'), 'module a(input x, output y);\nassign y = x;\nendmodule\n');
+  const lite = await onTestPort(port => startBridgeServer({ port, host: '127.0.0.1', workspaceDir: dir, wasm: false, pollMs: 0, quiet: true }));
+  try {
+    const names = (await mcp(lite, 'tools/list')).json.result.tools.map(t => t.name);
+    assert.ok(!names.includes('verilog_elaborate') && !names.includes('verilog_simulate'));
+    assert.ok(names.includes('verilog_lint') && names.includes('verilog_format') && names.includes('ide_write_file'));
+    assert.equal((await mcp(lite, 'tools/call', { name: 'verilog_simulate', arguments: {} })).json.error.code, -32602);
+    const lint = (await mcp(lite, 'tools/call', { name: 'verilog_lint', arguments: {} })).json.result.structuredContent;
+    assert.equal(lint.compile, null);
+    assert.ok(Array.isArray(lint.findings));
+  } finally { await lite.close(); }
+});
+
+await check('systemd socket activation: LISTEN_PID/LISTEN_FDS parsing and an inherited fd 3 listener', async () => {
+  const { systemdListenFd } = await import('../../server/bridge.mjs');
+  assert.equal(systemdListenFd({ LISTEN_PID: '1', LISTEN_FDS: '1' }, 2), null, 'another process\'s fds are ignored');
+  assert.equal(systemdListenFd({}, 2), null);
+  const env = { LISTEN_PID: '7', LISTEN_FDS: '1', LISTEN_FDNAMES: 'datapath-bridge.socket' };
+  assert.equal(systemdListenFd(env, 7), 3);
+  assert.deepEqual(env, {}, 'activation variables are cleared');
+  assert.throws(() => systemdListenFd({ LISTEN_PID: '7', LISTEN_FDS: '2' }, 7), /exactly one socket/);
+
+  // Stand in for systemd: bind a fixed port here, pass the listening fd as the child's fd 3, then drop ours.
+  const dir = await tempDir('dp-sock-');
+  await writeFile(join(dir, 'token'), 'd'.repeat(64));
+  const { createServer: netServer } = await import('node:net');
+  const { listener, port } = await onTestPort(port => new Promise((resolve, reject) => {
+    const s = netServer();
+    s.once('error', reject);
+    s.listen(port, '127.0.0.1', () => resolve({ listener: s, port }));
+  }));
+  const child = spawn('/bin/sh', ['-c', 'LISTEN_PID=$$ LISTEN_FDS=1 exec "$0" "$@"', process.execPath, join(ROOT, 'server/bridge.mjs'), '--dir', join(dir, 'ws'), '--token-file', join(dir, 'token'), '--poll-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe', listener._handle.fd] });
+  listener.close();
+  let err = '';
+  child.stderr.on('data', c => { err += c; });
+  const started = Date.now();
+  while (!/socket fd 3/.test(err)) { if (Date.now() - started > 5000 || child.exitCode !== null) throw new Error(`socket-activated bridge did not start: ${err}`); await sleep(20); }
+  const url = `http://127.0.0.1:${port}`;
+  assert.equal((await http(`${url}/healthz`)).status, 200);
+  assert.equal((await mcp({ url, token: 'd'.repeat(64) }, 'ping')).status, 200);
+  assert.ok(!err.includes('d'.repeat(64)), 'a token from a file is never logged');
+  child.kill('SIGTERM');
+  assert.equal(await new Promise(resolve => child.on('exit', resolve)), 0);
+});
+
 for (const dir of temps) await rm(dir, { recursive: true, force: true });
 console.log(`MCP bridge checks passed (${checks})`);

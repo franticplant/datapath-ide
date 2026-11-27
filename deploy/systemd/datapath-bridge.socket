@@ -1,0 +1,19 @@
+# Datapath Studio bridge: listening socket owned by systemd (PID 1), not by the service.
+# Loopback only. Tailscale Serve terminates HTTPS on the tailnet and proxies here, so the only
+# peer that ever connects is 127.0.0.1. The service itself runs with PrivateNetwork=yes and never
+# gets a network stack of its own; this inherited socket is the single way in (inbound only).
+[Unit]
+Description=Datapath Studio sync bridge socket (127.0.0.1:18473)
+Documentation=file:///opt/datapath-studio/current/deploy/README.md
+
+[Socket]
+ListenStream=127.0.0.1:18473
+Accept=no
+NoDelay=yes
+Backlog=64
+# eBPF filter on the listening socket: refuse anything that is not loopback.
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+[Install]
+WantedBy=sockets.target

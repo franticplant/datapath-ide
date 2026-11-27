@@ -1,0 +1,24 @@
+#!/bin/sh
+# Print the one-time pairing link (and a QR code for phones) for the Datapath Studio bridge.
+#   datapath-pair          pairing URL + QR code
+#   datapath-pair --mcp    MCP client settings (URL + token) for Claude Code / Codex
+#   datapath-pair --token  the bare token
+# Root only: the token is decrypted from the systemd credential store on demand.
+set -eu
+[ "$(id -u)" = 0 ] || { echo 'run as root' >&2; exit 1; }
+. /etc/datapath-bridge.env
+TOKEN=$(systemd-creds decrypt --name=bridge-token /etc/credstore.encrypted/datapath-bridge.token -)
+case ${1:-} in
+  --token) printf '%s\n' "$TOKEN" ;;
+  --mcp)
+    printf 'MCP endpoint (tailnet): %smcp\n' "$PUBLIC_URL"
+    printf 'MCP endpoint (on this host): %smcp\n' "$LOOPBACK_URL"
+    printf 'Authorization: Bearer %s\n' "$TOKEN" ;;
+  '')
+    # bridgeRemote=0: a paired tab does not accept MCP remote control until enabled in its dialog.
+    url="${PUBLIC_URL}?bridgeToken=${TOKEN}&bridgeRemote=0"
+    printf '%s\n\n' "$url"
+    if command -v qrencode >/dev/null 2>&1; then qrencode -t ansiutf8 -m 1 "$url"; fi
+    echo 'Open once per browser/app; the page stores the token and removes it from the address bar.' ;;
+  *) echo "usage: datapath-pair [--mcp | --token]" >&2; exit 2 ;;
+esac

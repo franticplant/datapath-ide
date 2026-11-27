@@ -1,0 +1,2 @@
+/opt/datapath-studio(/.*)?                gen_context(system_u:object_r:datapath_bridge_app_t,s0)
+/var/lib/private/datapath-bridge(/.*)?    gen_context(system_u:object_r:datapath_bridge_var_lib_t,s0)

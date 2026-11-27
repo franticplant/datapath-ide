@@ -2,18 +2,25 @@
 // Datapath Studio self-hosted bridge: serves web/, syncs a workspace directory with browser tabs over
 // WebSockets, and exposes the IDE plus a headless Icarus/RTL toolchain over MCP (POST /mcp).
 // Zero npm dependencies: Node 22 standard library plus the repository's own web/ modules.
-import { createServer } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { acceptWebSocket, rejectUpgrade } from './ws.mjs';
+
+// require(), not `import`: Node 22's ESM facade for node:http reads every export, including the lazy
+// `http.WebSocket` getter, which loads undici and its llhttp WebAssembly. Under `node --jitless`
+// (the hardened systemd profile, where WebAssembly does not exist) that crashes the bridge at startup.
+const { createServer } = createRequire(import.meta.url)('node:http');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, '..');
 export const DEFAULT_WEB_DIR = join(REPO_ROOT, 'web');
 export const TOKEN_FILE = '.bridge-token';
+export const CREDENTIAL_NAME = 'bridge-token'; // systemd LoadCredential[Encrypted]=bridge-token:...
 export const META_FILE = '.datapath-project.json';
 export const SERVER_INFO = { name: 'datapath-studio-mcp', version: '0.2.0' };
 export const PROTOCOL_VERSION = '2024-11-05';
@@ -22,6 +29,9 @@ const MAX_FILES = 5000;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const TEMP_RE = /^\.[^/]*\.[0-9a-f]{12}\.tmp$/;
 const HDL_RE = /\.(?:v|sv|vh|svh)$/i;
+const TOKEN_RE = /^[0-9a-f]{32,}$/i;
+// Tools that need WebAssembly (Icarus ivl/vvp); dropped with --no-wasm or when V8 runs --jitless.
+export const WASM_TOOLS = ['verilog_elaborate', 'verilog_simulate'];
 
 const log = (quiet, ...args) => { if (!quiet) console.error('[bridge]', ...args); };
 
@@ -73,13 +83,27 @@ export function tokensEqual(expected, given) {
 }
 
 // --token, then DATAPATH_BRIDGE_TOKEN, then <workspace>/.bridge-token (generated 0600 when missing).
-export async function resolveToken({ token = null, workspaceDir }) {
+// Order: --token, $DATAPATH_BRIDGE_TOKEN, --token-file, the systemd credential
+// ($CREDENTIALS_DIRECTORY/bridge-token), then <workspace>/.bridge-token (generated 0600 when missing).
+// An explicit --token-file must exist; tokens from a file or credential are never written anywhere.
+export async function resolveToken({ token = null, tokenFile = null, workspaceDir }) {
   if (typeof token === 'string' && token) return { token, source: 'argument' };
   if (process.env.DATAPATH_BRIDGE_TOKEN) return { token: process.env.DATAPATH_BRIDGE_TOKEN, source: 'environment' };
+  const credential = tokenFile || (process.env.CREDENTIALS_DIRECTORY ? join(process.env.CREDENTIALS_DIRECTORY, CREDENTIAL_NAME) : null);
+  if (credential) {
+    let saved = null;
+    try { saved = (await readFile(credential, 'utf8')).trim(); } catch (error) {
+      if (tokenFile || error.code !== 'ENOENT') throw new BridgeError(`Cannot read token file ${credential}: ${error.code || error.message}`, 'ETOKEN');
+    }
+    if (saved !== null) {
+      if (!TOKEN_RE.test(saved)) throw new BridgeError(`Token file ${credential} must contain at least 32 hex characters`, 'ETOKEN');
+      return { token: saved, source: tokenFile ? 'token-file' : 'credential' };
+    }
+  }
   const file = join(workspaceDir, TOKEN_FILE);
   try {
     const saved = (await readFile(file, 'utf8')).trim();
-    if (/^[0-9a-f]{32,}$/i.test(saved)) return { token: saved, source: 'file' };
+    if (TOKEN_RE.test(saved)) return { token: saved, source: 'file' };
   } catch { /* Generated below. */ }
   const fresh = randomBytes(32).toString('hex');
   await atomicWrite(file, `${fresh}\n`, 0o600);
@@ -457,7 +481,9 @@ const mimeFor = path => HDL_RE.test(path) ? 'text/x-verilog' : /\.(?:asm|s)$/i.t
 
 // JSON-RPC 2.0 / MCP dispatcher shared by POST /mcp and the stdio server.
 // `callBrowser(method, params, clientId)` forwards live IDE tools; `getClients()` lists tabs.
-export function createMcpHandler({ workspace = null, callBrowser = null, getClients = () => [] } = {}) {
+export function createMcpHandler({ workspace = null, callBrowser = null, getClients = () => [], wasm = typeof WebAssembly !== 'undefined' } = {}) {
+  const tools = TOOLS.filter(tool => wasm || !WASM_TOOLS.includes(tool.name));
+  const enabled = new Set(tools.map(tool => tool.name));
   const needWorkspace = () => { if (!workspace) throw new BridgeError('No workspace is attached to this MCP server (start it with --dir or connect to a bridge)'); return workspace; };
   const stripClient = ({ clientId, ...rest }) => rest;
 
@@ -491,7 +517,8 @@ export function createMcpHandler({ workspace = null, callBrowser = null, getClie
           if (!callBrowser) throw new BridgeError('No remote-enabled browser tab is connected (live IDE tools need the HTTP bridge and a tab with "Allow remote control" on).');
           return callBrowser(name, stripClient(args), args.clientId);
         }
-        return runHeadless(name, args, workspace);
+        // Without WebAssembly the linter still runs; only the Icarus compile step is skipped.
+        return runHeadless(name, name === 'verilog_lint' && !wasm ? { ...args, compile: false } : args, workspace);
     }
   }
 
@@ -500,10 +527,10 @@ export function createMcpHandler({ workspace = null, callBrowser = null, getClie
       case 'initialize':
         return { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: {}, resources: {} }, serverInfo: SERVER_INFO, instructions: 'Datapath Studio: edit the synced Verilog/MIPS workspace, drive open IDE tabs, and run the headless Icarus Verilog toolchain.' };
       case 'ping': return {};
-      case 'tools/list': return { tools: TOOLS.map(({ browser, ...tool }) => tool) };
+      case 'tools/list': return { tools: tools.map(({ browser, ...tool }) => tool) };
       case 'tools/call': {
         const name = params?.name;
-        if (!TOOL_BY_NAME.has(name)) throw Object.assign(new Error(`Unknown tool: ${name}`), { rpcCode: -32602 });
+        if (!TOOL_BY_NAME.has(name) || !enabled.has(name)) throw Object.assign(new Error(`Unknown tool: ${name}`), { rpcCode: -32602 });
         const args = params.arguments ?? {};
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw Object.assign(new Error('Tool arguments must be an object'), { rpcCode: -32602 });
         try { return toolResult(await callTool(name, args)); } catch (error) { return toolError(error.message || String(error)); }
@@ -547,7 +574,7 @@ export function createMcpHandler({ workspace = null, callBrowser = null, getClie
     }
   }
 
-  return { handle, callTool, tools: TOOLS };
+  return { handle, callTool, tools };
 }
 
 // ------------------------------------------------------------------------------------------------ HTTP / WS
@@ -584,9 +611,20 @@ function readBody(req, limit) {
   });
 }
 
-export async function startBridgeServer({ port = 18473, host = '127.0.0.1', workspaceDir = 'workspace', webDir = DEFAULT_WEB_DIR, token = null, pollMs = 1000, quiet = false, rpcTimeoutMs = 30000 } = {}) {
+// systemd socket activation (sd_listen_fds): the inherited listening socket is fd 3. Only honoured when
+// LISTEN_PID names this process; the variables are then cleared so child processes never inherit them.
+export function systemdListenFd(env = process.env, pid = process.pid) {
+  if (Number(env.LISTEN_PID) !== pid) return null;
+  const count = Number(env.LISTEN_FDS);
+  if (!Number.isInteger(count) || count < 1) return null;
+  if (count !== 1) throw new BridgeError(`Expected exactly one socket from systemd, got LISTEN_FDS=${env.LISTEN_FDS}`, 'ELISTEN');
+  for (const key of ['LISTEN_PID', 'LISTEN_FDS', 'LISTEN_FDNAMES']) delete env[key];
+  return 3;
+}
+
+export async function startBridgeServer({ port = 18473, host = '127.0.0.1', fd = null, workspaceDir = 'workspace', webDir = DEFAULT_WEB_DIR, token = null, tokenFile = null, wasm = typeof WebAssembly !== 'undefined', pollMs = 1000, quiet = false, rpcTimeoutMs = 30000 } = {}) {
   const workspace = await new Workspace(workspaceDir, { pollMs, quiet }).init();
-  const { token: secret, source } = await resolveToken({ token, workspaceDir: workspace.root });
+  const { token: secret, source } = await resolveToken({ token, tokenFile, workspaceDir: workspace.root });
   const webRoot = await realpath(resolve(webDir));
   // connection -> { clientId, label, allowRemote, connectedAt, order (roster position), seq (recency for RPC routing) }
   const clients = new Map();
@@ -617,7 +655,7 @@ export async function startBridgeServer({ port = 18473, host = '127.0.0.1', work
     });
   }
 
-  const mcp = createMcpHandler({ workspace, callBrowser, getClients: clientList });
+  const mcp = createMcpHandler({ workspace, callBrowser, getClients: clientList, wasm });
 
   async function onMessage(conn, text) {
     const info = clients.get(conn);
@@ -728,15 +766,18 @@ export async function startBridgeServer({ port = 18473, host = '127.0.0.1', work
 
   await new Promise((resolveListen, rejectListen) => {
     server.once('error', rejectListen);
-    server.listen(port, host, () => { server.off('error', rejectListen); resolveListen(); });
+    const ready = () => { server.off('error', rejectListen); resolveListen(); };
+    if (fd !== null) server.listen({ fd }, ready); else server.listen(port, host, ready);
   });
   workspace.startWatching();
   const address = server.address();
+  if (fd !== null) host = address.address;
   const shownHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host;
   const url = `http://${shownHost}:${address.port}`;
   const wsUrl = `ws://${shownHost}:${address.port}/ws`;
-  log(quiet, `serving ${webRoot} and workspace ${workspace.root} on ${url} (token from ${source})`);
-  if (!quiet) {
+  log(quiet, `serving ${webRoot} and workspace ${workspace.root} on ${url}${fd !== null ? ` (socket fd ${fd})` : ''} (token from ${source}${wasm ? '' : ', WebAssembly tools off'})`);
+  // Secrets from a token file or systemd credential stay out of logs (the journal is readable by adm).
+  if (!quiet && source !== 'token-file' && source !== 'credential') {
     console.error(`[bridge] token: ${secret}`);
     console.error(`[bridge] pair a browser: ${url}/?bridgeToken=${secret}`);
     console.error(`[bridge] MCP endpoint: POST ${url}/mcp (Authorization: Bearer <token>)`);
@@ -772,6 +813,9 @@ export function parseArgs(argv) {
       case '--dir': options.workspaceDir = value(); break;
       case '--web': options.webDir = value(); break;
       case '--token': options.token = value(); break;
+      case '--token-file': options.tokenFile = value(); break;
+      case '--listen-fd': options.fd = Number(value()); break;
+      case '--no-wasm': options.wasm = false; break;
       case '--poll': case '--poll-ms': options.pollMs = Number(value()); break;
       case '--quiet': options.quiet = true; break;
       case '--help': case '-h': options.help = true; break;
@@ -781,12 +825,20 @@ export function parseArgs(argv) {
   return options;
 }
 
-const USAGE = `Usage: node server/bridge.mjs [--port 18473] [--host 127.0.0.1] [--dir workspace] [--web web] [--token TOKEN] [--poll-ms 1000] [--quiet]`;
+const USAGE = `Usage: node server/bridge.mjs [--port 18473] [--host 127.0.0.1 | --listen-fd 3] [--dir workspace] [--web web]
+       [--token TOKEN | --token-file FILE] [--no-wasm] [--poll-ms 1000] [--quiet]
+Under systemd socket activation (LISTEN_FDS/LISTEN_PID) the inherited socket is used automatically,
+and the token is read from the credential 'bridge-token' when $CREDENTIALS_DIRECTORY provides it.`;
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Run as a program only when this file is the entry point. Compare real paths: Node resolves symlinks
+// for import.meta.url, so /opt/datapath-studio/current/... (a symlink to a release) would never match.
+const entryUrl = (() => { try { return pathToFileURL(realpathSync(process.argv[1])).href; } catch { return null; } })();
+if (process.argv[1] && import.meta.url === entryUrl) {
   let options;
   try { options = parseArgs(process.argv.slice(2)); } catch (error) { console.error(error.message); console.error(USAGE); process.exit(2); }
   if (options.help) { console.log(USAGE); process.exit(0); }
+  try { options.fd ??= systemdListenFd(); } catch (error) { console.error(`[bridge] ${error.message}`); process.exit(1); }
+  if (options.fd !== null && !(Number.isInteger(options.fd) && options.fd >= 0)) { console.error('[bridge] --listen-fd needs a file descriptor number'); process.exit(2); }
   startBridgeServer(options).then(bridge => {
     const stop = signal => { log(options.quiet, `${signal}: shutting down`); bridge.close().then(() => process.exit(0)); setTimeout(() => process.exit(0), 2000).unref(); };
     process.once('SIGINT', () => stop('SIGINT'));

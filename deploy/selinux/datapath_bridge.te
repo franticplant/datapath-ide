@@ -1,0 +1,99 @@
+policy_module(datapath_bridge, 1.0.0)
+
+########################################
+# Datapath Studio bridge: its own SELinux domain.
+#
+# systemd enters it through SELinuxContext= (deploy/systemd/selinux.conf). Deliberately absent:
+# any network port (name_bind / name_connect), any exec of other programs, access to user home
+# directories, other services' state, or the rest of /opt. Even with PrivateNetwork disabled the
+# domain could not open an outbound connection.
+#
+# Phase 1 ships the domain PERMISSIVE: denials are logged, nothing is blocked, so a policy gap
+# cannot take the service down on day one. After a few days of normal use with no new AVCs
+#   ausearch -m AVC,USER_AVC -su datapath_bridge_t
+# rebuild with ENFORCE=1 (deploy/install.sh --enforce-selinux), which drops the permissive line.
+########################################
+
+require {
+	type init_t;
+	type bin_t;
+	type var_run_t;
+	type lo_node_t;
+	class process { transition siginh rlimitinh noatsecure sigchld signal sigkill getattr };
+	class process2 { nnp_transition nosuid_transition };
+}
+
+type datapath_bridge_t;
+domain_type(datapath_bridge_t)
+role system_r types datapath_bridge_t;
+
+# /opt/datapath-studio: application code, read-only.
+type datapath_bridge_app_t;
+files_type(datapath_bridge_app_t)
+
+# /var/lib/private/datapath-bridge: the synced workspace.
+type datapath_bridge_var_lib_t;
+files_type(datapath_bridge_var_lib_t)
+
+#@PERMISSIVE@ permissive datapath_bridge_t;
+
+######## entry from PID 1 (/usr/bin/node is bin_t)
+allow init_t datapath_bridge_t:process { transition siginh rlimitinh noatsecure signal sigkill getattr };
+# The unit sets NoNewPrivileges=yes; entering a domain under no_new_privs needs nnp_transition.
+allow init_t datapath_bridge_t:process2 { nnp_transition nosuid_transition };
+allow datapath_bridge_t bin_t:file { entrypoint };
+allow datapath_bridge_t init_t:fd use;
+allow datapath_bridge_t init_t:process sigchld;
+corecmd_exec_bin(datapath_bridge_t)
+
+######## the process itself
+# execmem: V8's JIT. Not needed by the jitless profile, but harmless to keep for both.
+allow datapath_bridge_t self:process { execmem signal_perms getsched setsched getattr setrlimit };
+allow datapath_bridge_t self:fifo_file rw_fifo_file_perms;
+allow datapath_bridge_t self:unix_stream_socket create_stream_socket_perms;
+allow datapath_bridge_t self:unix_dgram_socket create_socket_perms;
+
+######## the activated socket and the connections accepted on it
+# With SELinuxContext= set, PID 1 creates the listening socket already labelled datapath_bridge_t
+# and binds it to 127.0.0.1:18473 (port type datapath_bridge_port_t, assigned by install.sh with
+# semanage). That one port on loopback is the only thing the domain may bind; it may connect nowhere.
+type datapath_bridge_port_t;
+corenet_port(datapath_bridge_port_t)
+allow init_t datapath_bridge_t:tcp_socket { create bind listen setopt getopt getattr setattr accept read write ioctl shutdown };
+allow datapath_bridge_t datapath_bridge_port_t:tcp_socket name_bind;
+allow datapath_bridge_t lo_node_t:tcp_socket node_bind;
+allow datapath_bridge_t init_t:tcp_socket { getattr getopt setopt accept read write ioctl listen shutdown };
+allow datapath_bridge_t self:tcp_socket { getattr getopt setopt accept listen read write ioctl shutdown };
+
+######## libraries, locale, /proc/self, randomness, journal
+libs_use_ld_so(datapath_bridge_t)
+libs_use_shared_libs(datapath_bridge_t)
+miscfiles_read_localization(datapath_bridge_t)
+kernel_read_system_state(datapath_bridge_t)
+dev_read_urand(datapath_bridge_t)
+dev_read_rand(datapath_bridge_t)
+dev_read_sysfs(datapath_bridge_t)
+files_read_etc_files(datapath_bridge_t)
+logging_send_syslog_msg(datapath_bridge_t)
+init_use_fds(datapath_bridge_t)
+init_rw_stream_sockets(datapath_bridge_t)
+
+######## systemd credential (decrypted by PID 1 under /run/credentials/datapath-bridge.service)
+# Provisional: /run/credentials is var_run_t on RHEL 10; narrow this to the label the AVC log shows
+# for the credential file itself before switching to enforcing.
+files_search_pids(datapath_bridge_t)
+allow datapath_bridge_t var_run_t:dir search_dir_perms;
+allow datapath_bridge_t var_run_t:file read_file_perms;
+
+######## application code: read-only
+files_search_usr(datapath_bridge_t)
+list_dirs_pattern(datapath_bridge_t, datapath_bridge_app_t, datapath_bridge_app_t)
+read_files_pattern(datapath_bridge_t, datapath_bridge_app_t, datapath_bridge_app_t)
+read_lnk_files_pattern(datapath_bridge_t, datapath_bridge_app_t, datapath_bridge_app_t)
+allow datapath_bridge_t datapath_bridge_app_t:file map;
+
+######## workspace: read/write (atomic temp-file + rename writes)
+files_search_var_lib(datapath_bridge_t)
+manage_dirs_pattern(datapath_bridge_t, datapath_bridge_var_lib_t, datapath_bridge_var_lib_t)
+manage_files_pattern(datapath_bridge_t, datapath_bridge_var_lib_t, datapath_bridge_var_lib_t)
+files_var_lib_filetrans(datapath_bridge_t, datapath_bridge_var_lib_t, dir)

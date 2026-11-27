@@ -72,6 +72,8 @@ The optional bridge synchronizes a workspace directory with connected browser ta
 
 MCP clients can connect to the authenticated HTTP `/mcp` endpoint or launch `mcp/server.mjs` over stdio with `--url` and `--token`. For a local headless session, use `mcp/server.mjs --dir workspace`; its Verilog, RTL analysis and simulation tools run with the bundled WASM engine without a browser.
 
+To keep the bridge running on a server, see [`deploy/README.md`](deploy/README.md). It lists what any deployment needs, covers pairing devices and connecting MCP clients, and includes a reference setup: a hardened systemd service published with Tailscale Serve.
+
 ## Using Datapath Studio
 
 Create or import Verilog and memory files in **Files**, pick the top module in **Inspect**, then **Compile** or **Run** (Ctrl+Enter). A testbench that calls `$dumpfile`/`$dumpvars` fills the **Waveform** panel. Files can be excluded from the build from their action menu; advanced settings cover defines, include paths, warnings, parameter overrides, plusargs and source order.
