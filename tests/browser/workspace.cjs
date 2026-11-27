@@ -17,7 +17,8 @@ const webRoot = join(__dirname, '../../web');
 
 (async () => {
   const server = createServer(async (req, res) => {
-    const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+    const pathOnly = req.url.split('?')[0];
+    const reqPath = pathOnly === '/' ? '/index.html' : pathOnly;
     try {
       const data = await readFile(join(webRoot, reqPath));
       const type = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm' }[extname(reqPath)] || 'text/plain';
@@ -1544,6 +1545,94 @@ const webRoot = join(__dirname, '../../web');
     await waitText('#toast', 'Press back again to leave Datapath Studio');
     assert.equal(page.url(), rootUrl);
     assert.equal(await page.locator('#run').count(), 1);
+
+    // 20. Featured showcase & smooth 6-chapter interactive tour + deep-links.
+    await page.evaluate(async () => {
+      localStorage.clear();
+      await new Promise(resolve => {
+        const req = indexedDB.deleteDatabase('datapath-studio');
+        req.onsuccess = req.onerror = req.onblocked = () => resolve();
+      });
+    });
+    await page.reload();
+    await page.waitForFunction(() => !document.getElementById('run').disabled);
+    await page.waitForSelector('#featured-hero:not([hidden])');
+    assert.equal(await page.locator('#featured-hero').isVisible(), true);
+    assert.equal(await page.locator('#run').isDisabled(), false, 'IDE stays interactive while Featured hero is open');
+    assert.equal(await page.locator('#editor .cm-content').isEditable(), true, 'editor stays editable while Featured hero is open');
+    assert.equal(await page.locator('#featured-chapters .featured-chip').count(), 6);
+    await page.setViewportSize({ width: 412, height: 915 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal overflow with Featured hero on mobile');
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    const waitTourSettled = () => page.waitForFunction(() => !document.getElementById('tour-rail').hidden && document.getElementById('tour-busy').hidden && !document.getElementById('tour-assist').disabled, null, { timeout: 60000 });
+    await page.locator('#tour-start').click();
+    await page.waitForFunction(() => document.getElementById('featured-hero').hidden);
+    await waitText('#tour-counter', '1/6');
+    await waitTourSettled();
+
+    // Ch 1 (Boot): MIPS RegFile visible, assist switches to IMEM PC disasm & marks step done.
+    await page.waitForSelector('#hw-arrays [data-array="mips_cpu_tb.dut.u_rf.regs"]');
+    await page.locator('#tour-assist').click();
+    await page.waitForFunction(() => document.querySelector('#hw-arrays [data-array="mips_cpu_tb.dut.u_imem.mem"]')?.getAttribute('aria-pressed') === 'true');
+    assert.equal(await page.locator('#hw-disasm').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('[data-tour-step="0"].is-done').count(), 1);
+
+    // Ch 2 (X-Ray): Schematic elaborated with u_alu; assist inspects u_alu & IDE zoom stays interactive.
+    await page.locator('#tour-next').click();
+    await waitText('#tour-counter', '2/6');
+    await waitTourSettled();
+    await page.waitForSelector('#schem-canvas .schem-cell.kind-module[data-name="u_alu"]');
+    await page.locator('#tour-assist').click();
+    await page.waitForSelector('#schem-inspector:not([hidden])');
+    const vbBefore = await page.locator('#schem-canvas').getAttribute('viewBox');
+    await page.locator('#schem-zoom-in').click();
+    assert.notEqual(await page.locator('#schem-canvas').getAttribute('viewBox'), vbBefore, 'IDE schematic zoom works during tour');
+
+    // Ch 3 (Debug): bug-hunter latch warning pill; assist jumps to datapath_slice.v.
+    await page.locator('#tour-next').click();
+    await waitText('#tour-counter', '3/6');
+    await waitTourSettled();
+    await page.waitForSelector('#schem-warnings .schem-warning');
+    await page.locator('#tour-assist').click();
+    await waitText('#active-file', 'Active: datapath_slice.v');
+
+    // Ch 4 (Time): fsm-control symbolic waveform + assist step.
+    await page.locator('#tour-next').click();
+    await waitText('#tour-counter', '4/6');
+    await waitTourSettled();
+    await page.waitForSelector('.wave-row[data-path="fsm_tb.dut.state"]');
+    assert.match(await page.locator('.wave-row[data-path="fsm_tb.dut.state"] strong').textContent(), /^(?:FETCH|DECODE|EXEC|MEM|WRITEBACK)$/);
+    await page.locator('#tour-assist').click();
+
+    // Ch 5 (Touch): fpga-board Live DUT; assist flips switches & ticks clock.
+    await page.locator('#tour-next').click();
+    await waitText('#tour-counter', '5/6');
+    await waitTourSettled();
+    await page.waitForFunction(() => !document.getElementById('board-tick').disabled, null, { timeout: 30000 });
+    await page.locator('#tour-assist').click();
+    await waitText('#board-live-outputs [data-port="leds"] .board-readout', '0x01', 15000);
+
+    // Ch 6 (Verify): alu-suite runs all 4 tests; mobile layout clean; assist resets to clean workspace.
+    await page.locator('#tour-next').click();
+    await waitText('#tour-counter', '6/6');
+    await waitTourSettled();
+    await waitText('#tests-summary', '4/4 passed', 60000);
+    await page.setViewportSize({ width: 412, height: 915 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal overflow with tour rail on mobile');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('#tour-assist').click();
+    await page.waitForFunction(() => document.getElementById('tour-rail').hidden);
+    await waitText('#active-file', 'Active: design.v');
+
+    // Deep links: ?tour=debug and ?showcase=fsm-control.
+    await page.goto(`${baseUrl}?tour=debug`);
+    await waitText('#tour-counter', '3/6');
+    await waitTourSettled();
+    await page.waitForSelector('#schem-warnings .schem-warning');
+    await page.goto(`${baseUrl}?showcase=fsm-control`);
+    await page.waitForSelector('.wave-row[data-path="fsm_tb.dut.state"]', { timeout: 60000 });
+    assert.match(await page.locator('.wave-row[data-path="fsm_tb.dut.state"] strong').textContent(), /^(?:FETCH|DECODE|EXEC|MEM|WRITEBACK)$/);
 
     assert.deepEqual(browserErrors, []);
     console.log('Browser workspace checks passed');

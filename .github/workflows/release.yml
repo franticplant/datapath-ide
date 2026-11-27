@@ -51,6 +51,7 @@ jobs:
           node engine/smoke.mjs
           node tests/unit/stage4.test.mjs
           node tests/unit/stage5.test.mjs
+          node tests/unit/tour.test.mjs
 
       - name: Package static site
         run: |

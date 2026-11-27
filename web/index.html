@@ -28,6 +28,7 @@
       <button id="mode-wave" data-mode="wave" aria-pressed="false" title="Waveform focus mode (Alt+3)">Wave</button>
       <button id="mode-zen" data-mode="zen" aria-pressed="false" title="Zen mode (F10 / Ctrl+K Z)">Zen</button>
     </div>
+    <button id="open-showcase" class="btn showcase-btn" type="button" title="Featured Showcase &amp; Interactive Tour"><span class="ic" aria-hidden="true">✦</span><span class="lbl">Showcase</span></button>
     <div class="spacer"></div>
     <div class="runbar">
       <button id="assemble" class="btn" hidden title="Assemble MIPS .asm/.s into .mem (Ctrl+Shift+A)">
@@ -111,6 +112,41 @@
     <div class="splitter vertical" id="explorer-splitter" role="separator" aria-label="Resize explorer" aria-orientation="vertical" tabindex="0"></div>
 
     <section class="workspace">
+      <section id="featured-hero" class="featured-hero" aria-label="Featured showcase and tour" hidden>
+        <div class="featured-inner">
+          <div class="featured-top">
+            <div class="featured-copy">
+              <span class="featured-badge">✦ Featured</span>
+              <h2>Follow a chip from assembly to verified silicon</h2>
+              <p>Take a 6-chapter interactive tour through live MIPS execution, RTL schematics, latch debugging, symbolic FSMs, and an FPGA board — the full IDE stays interactive the whole time.</p>
+            </div>
+            <div class="featured-actions">
+              <button id="tour-start" class="btn primary" type="button">▶ Start Interactive Tour</button>
+              <button id="featured-browse" class="btn" type="button">All 5 Showcases</button>
+              <button id="featured-dismiss" class="icon-btn" type="button" aria-label="Dismiss featured banner" title="Dismiss"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+            </div>
+          </div>
+          <div id="featured-chapters" class="featured-chapters" role="group" aria-label="Jump to tour chapter"></div>
+        </div>
+      </section>
+      <aside id="tour-rail" class="tour-rail" aria-label="Interactive tour" hidden>
+        <div class="tour-inner">
+          <div class="tour-nav">
+            <span class="tour-badge" id="tour-counter">1/6</span>
+            <nav id="tour-steps" class="tour-steps" aria-label="Tour chapters"></nav>
+            <span id="tour-busy" class="tour-busy" aria-live="polite" hidden></span>
+            <button id="tour-close" class="icon-btn tour-close" type="button" aria-label="Exit tour" title="Exit tour (keep workspace)"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+          <div class="tour-bar">
+            <p id="tour-copy" class="tour-copy"></p>
+            <div class="tour-controls">
+              <button id="tour-assist" class="chip primary-chip" type="button"></button>
+              <button id="tour-prev" class="chip" type="button" aria-label="Previous chapter">←</button>
+              <button id="tour-next" class="chip" type="button">Next →</button>
+            </div>
+          </div>
+        </div>
+      </aside>
       <div id="editor-groups" class="editor-groups"></div>
       <div class="splitter horizontal" id="dock-splitter" role="separator" aria-label="Resize output" aria-orientation="horizontal" tabindex="0"></div>
       <section class="bottom">
@@ -378,6 +414,13 @@
   <dialog id="template-dialog" class="showcase-dialog" aria-labelledby="template-title">
     <div class="dialog-head"><h2 id="template-title">Showcase Projects &amp; Templates</h2><button id="close-templates" class="icon-btn" aria-label="Close">×</button></div>
     <div class="showcase-scroll">
+      <div id="dialog-tour-hero" class="dialog-tour-hero">
+        <div>
+          <strong>Interactive Hardware Tour</strong>
+          <small>6 guided chapters across live CPU state, RTL schematics, latches, FSMs &amp; FPGA</small>
+        </div>
+        <button id="dialog-tour-start" class="btn primary" type="button">▶ Start 6-Chapter Tour</button>
+      </div>
       <section aria-labelledby="showcase-heading">
         <h3 id="showcase-heading" class="showcase-heading">Showcase Projects <small>Ready to run · replaces workspace</small></h3>
         <div id="showcase-grid" class="showcase-grid"></div>

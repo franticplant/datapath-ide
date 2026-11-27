@@ -21,6 +21,7 @@ import { extractFsmStates, stateNameFor } from './fsm-states.js';
 import { createNavHistory } from './nav-history.js';
 import { MIPS_TEMPLATE, MIPS_TEMPLATE_TOP } from './mips-template.js';
 import { SHOWCASE_PROJECTS, showcaseProject } from './showcase-projects.js';
+import { installTour, parseDeepLink } from './tour.js';
 import { VERILOG_KEYWORDS, VERILOG_SYSTASKS, VERILOG_DIRECTIVES, VERILOG_SNIPPETS, SHORTCUTS, lookupHint, parseVerilogLiteral, searchRef } from './verilog-ref.js';
 
 const STANDARDS = ['2001', '2005', '2009', '2012'];
@@ -46,10 +47,19 @@ let hwState = null;
 let board = null;
 let schematic = null;
 let nav = null;             // Back / Forward history (nav-history.js), created once the UI is installed
+let tour = null;            // Featured showcase & 6-chapter interactive tour controller (tour.js)
+let activeShowcaseId = null;
 let fsmMap = null;
+
+const FEATURED_DISMISSED_KEY = 'datapath.featured.dismissed';
+function dismissFeatured() {
+  try { localStorage.setItem(FEATURED_DISMISSED_KEY, '1'); } catch { /* ignore */ }
+  tour?.hideFeatured();
+}
 
 const storage = createWorkspaceStorage({ onError: () => { $('save-state').textContent = 'IndexedDB unavailable — export a ZIP backup'; } });
 let restoredAt = 0;         // savedAt of the snapshot this session started from
+let hadSavedWorkspace = false;
 let hydrated = false;       // true once the IndexedDB copy has been compared with the mirror
 let pendingSave = false;    // saves requested before hydration finished
 
@@ -69,7 +79,7 @@ function applySnapshot(saved) {
 
 try {
   const saved = storage.loadMirror();
-  if (validSnapshot(saved)) applySnapshot(saved);
+  if (validSnapshot(saved)) { hadSavedWorkspace = true; applySnapshot(saved); }
 } catch {
   $('save-state').textContent = 'Could not restore workspace';
 }
@@ -96,6 +106,8 @@ async function hydrateFromDurable() {
   const hadPending = pendingSave;
   pendingSave = false;
   if (validSnapshot(durable) && Number(durable.savedAt) > restoredAt) {
+    hadSavedWorkspace = true;
+    dismissFeatured();
     applySnapshot(durable);
     groups.removePaths(() => true, current);
     groups.openFile(current);
@@ -308,6 +320,7 @@ const groups = new EditorGroups($('editor-groups'), {
   getFile: path => files[path],
   getDiagnostics: () => diagnostics,
   onChange: (name, text) => {
+    dismissFeatured();
     files[name] = text;
     suggestModules();
     save();
@@ -828,9 +841,11 @@ function renderShowcaseCards() {
 renderShowcaseCards();
 
 // Replace the workspace with a fresh copy of a showcase project and point the UI at its feature.
-function loadShowcaseProject(id) {
+function loadShowcaseProject(id, { silent = false } = {}) {
   const project = showcaseProject(id);
   if (!project) return false;
+  dismissFeatured();
+  activeShowcaseId = id;
   if ($('template-dialog').open) $('template-dialog').close();
   if (board?.isLive()) board.stopLive();
   files = Object.assign(Object.create(null), project.files);
@@ -846,7 +861,7 @@ function loadShowcaseProject(id) {
   groups.removePaths(() => true, current);
   suggestModules();
   openFile(current);
-  if (!matchMedia('(max-width: 899px)').matches && !layout.getState().dockHidden && project.dockTab) {
+  if (!silent && !matchMedia('(max-width: 899px)').matches && !layout.getState().dockHidden && project.dockTab) {
     document.querySelector(`[data-panel="${project.dockTab}"]`)?.click();
   }
   schematic?.render();
@@ -856,13 +871,37 @@ function loadShowcaseProject(id) {
   save();
   storage.flush();
   $('save-state').textContent = `Loaded showcase: ${project.title}`;
-  showToast(project.tryNext, 6000);
+  if (!silent) showToast(project.tryNext, 6000);
   return true;
+}
+function resetCleanWorkspace() {
+  if (board?.isLive()) board.stopLive();
+  activeShowcaseId = null;
+  files = Object.assign(Object.create(null), defaults);
+  folders = new Set();
+  excluded = new Set();
+  collapsed = new Set();
+  current = 'design.v';
+  diagnostics = [];
+  renderProblems([]);
+  consoleOverride = null;
+  waveform.clearVcd();
+  $('top-module').value = '';
+  groups.removePaths(() => true, current);
+  suggestModules();
+  openFile(current);
+  if (!matchMedia('(max-width: 899px)').matches && !layout.getState().dockHidden) showPanel('console');
+  schematic?.render();
+  save();
+  storage.flush();
+  $('save-state').textContent = 'Clean workspace ready';
+  showToast('Started a clean Verilog workspace');
 }
 function openShowcase() {
   $('template-dialog').showModal();
   $('showcase-grid').querySelector('.showcase-card')?.focus();
 }
+$('open-showcase')?.addEventListener('click', openShowcase);
 
 document.querySelectorAll('[data-template]').forEach(button => {
   button.onclick = async () => {
@@ -1132,6 +1171,7 @@ function openMoreSheet() {
     ['Import ZIP', () => $('project-input').click()],
     ['Export ZIP', () => $('export-project').click()],
     ['Showcase Projects…', openShowcase],
+    ['Interactive Hardware Tour', () => tour?.start(0)],
     ['Zen Mode', () => layout.toggleZen()],
     ['About Datapath Studio', openAbout],
   ];
@@ -1263,11 +1303,23 @@ function renderProblems(items, summary = '') {
   panel.append(list);
 }
 
+const engineReadyWaiters = [];
+const simRunWaiters = [];
+let suppressNextAutoWave = false;
+function resolveSimWaiters(outcome) {
+  while (simRunWaiters.length) simRunWaiters.shift()(outcome);
+}
+function waitEngineReady() {
+  if (engine.ready) return Promise.resolve();
+  return new Promise(resolve => engineReadyWaiters.push(resolve));
+}
+
 const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type: 'module' }), event => {
   if (event.type === 'ready') {
     setBusy(false);
     engineStatus('Icarus WASM ready', 'st-ready');
     $('console-output').textContent ||= 'Ready.';
+    while (engineReadyWaiters.length) engineReadyWaiters.shift()();
   } else if (event.type === 'status') {
     engineStatus(`${event.phase}…`, 'st-running');
   } else if (event.type === 'diagnostics') {
@@ -1280,18 +1332,20 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
   } else if (event.type === 'result') {
     setBusy(false);
     engineStatus('Complete', 'st-done');
+    const suppressWave = suppressNextAutoWave;
+    suppressNextAutoWave = false;
     if (event.memTrace && !event.vcdFiles?.length) {
       waveform.store.loadMemTrace(event.memTrace);
-      showToast(`Captured ${event.memTrace.arrays.length} memory array${event.memTrace.arrays.length === 1 ? '' : 's'} — see the State tab`);
+      if (!suppressWave) showToast(`Captured ${event.memTrace.arrays.length} memory array${event.memTrace.arrays.length === 1 ? '' : 's'} — see the State tab`);
     }
     if (event.vcdFiles?.length) {
       try {
         waveform.loadVcd(event.vcdFiles[0].data, event.vcdFiles[0].path);
         if (event.memTrace) waveform.store.loadMemTrace(event.memTrace);
-        if (layout.getState().autoSwitchWave) {
+        if (!suppressWave && layout.getState().autoSwitchWave) {
           document.querySelector('[data-panel="waveform"]').click();
           if (matchMedia('(max-width: 899px)').matches) selectView('waveform');
-        } else {
+        } else if (!suppressWave) {
           showToast(`Waveform ready (${event.vcdFiles[0].path})`);
         }
       } catch (error) {
@@ -1299,8 +1353,10 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
         showConsole();
       }
     }
+    resolveSimWaiters({ ok: true, event });
   } else if (event.type === 'error') {
     setBusy(false);
+    suppressNextAutoWave = false;
     engineStatus('Error', 'st-error');
     log.append(`\n${event.message}\n`);
     showConsole();
@@ -1311,7 +1367,9 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
       selectView('console');
       document.querySelector('[data-panel="problems"]').click();
     }
+    resolveSimWaiters({ ok: false, event });
   } else if (event.type === 'stopped') {
+    suppressNextAutoWave = false;
     engineStatus('Force-stopped; restarting engine', 'st-error');
     $('run').disabled = true;
     $('compile').disabled = true;
@@ -1320,17 +1378,21 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
     document.body.classList.remove('is-running');
     log.append('\nSimulation force-stopped; partial waveform unavailable.\n');
     showConsole();
+    resolveSimWaiters({ ok: false, event });
   } else if (event.type === 'engine-error') {
     setBusy(true);
+    suppressNextAutoWave = false;
     $('stop').disabled = true;
     engineStatus('Engine unavailable', 'st-error');
     log.append(`\n${event.message}\n`);
     showConsole();
+    resolveSimWaiters({ ok: false, event });
   }
 });
 
-function execute(type) {
-  if (!engine.ready || engine.activeRunId !== null) return;
+function execute(type, { suppressAutoWave = false, quiet = false } = {}) {
+  if (!quiet) dismissFeatured();
+  if (!engine.ready || engine.activeRunId !== null) return false;
   let settings;
   try {
     settings = simulationSettings.snapshot();
@@ -1341,9 +1403,9 @@ function execute(type) {
     showConsole();
     document.querySelector('[data-panel="console"]').click();
     if (matchMedia('(max-width: 899px)').matches) selectView('console');
-    return;
+    return false;
   }
-  if (!assembleBeforeBuild()) return;
+  if (!assembleBeforeBuild()) return false;
   log.limit = settings.outputCap;
   consoleOverride = null;
   if (layout.getState().autoClearConsole) log.clear();
@@ -1352,18 +1414,24 @@ function execute(type) {
   waveform.clearVcd();
   diagnostics = [];
   renderProblems([]);
+  suppressNextAutoWave = suppressAutoWave;
   setBusy(true);
   engineStatus('Starting…', 'st-running');
-  if (layout.getState().dockHidden) layout.update({ mode: 'custom', dockHidden: false });
-  document.querySelector('[data-panel="console"]').click();
-  if (matchMedia('(max-width: 899px)').matches) selectView('console');
+  if (!quiet) {
+    if (layout.getState().dockHidden) layout.update({ mode: 'custom', dockHidden: false });
+    document.querySelector('[data-panel="console"]').click();
+    if (matchMedia('(max-width: 899px)').matches) selectView('console');
+  }
   try {
     engine.run({ type, files: { ...files }, ...settings, topModule: $('top-module').value, standard: $('standard').value });
+    return true;
   } catch (error) {
+    suppressNextAutoWave = false;
     setBusy(false);
     engineStatus('Error', 'st-error');
     log.append(error.message);
     showConsole();
+    return false;
   }
 }
 
@@ -1420,6 +1488,7 @@ function buildCommands() {
     { label: 'Import ZIP', hint: '', run: () => $('import-project').click() },
     { label: 'Export ZIP', hint: '', run: () => $('export-project').click() },
     { label: 'Showcase Projects…', hint: '', run: () => openShowcase() },
+    { label: 'Interactive Hardware Tour', hint: '6 chapters', run: () => tour?.start(0) },
     { label: 'About Datapath Studio', hint: '', run: () => openAbout() },
     { label: 'Starter Templates', hint: '', run: () => openShowcase() },
     { label: 'Editor & Workspace Settings', hint: '', run: () => $('preferences').click() },
@@ -1658,6 +1727,86 @@ document.addEventListener('keydown', event => {
   if (event.key === 'ArrowLeft') nav.back(); else nav.forward();
 }, true);
 
+function waitUntil(check, timeout = 25000) {
+  return new Promise(resolve => {
+    const start = Date.now();
+    const poll = () => {
+      if (check()) { resolve(true); return; }
+      if (Date.now() - start >= timeout) { resolve(false); return; }
+      setTimeout(poll, 40);
+    };
+    poll();
+  });
+}
+
+tour = installTour({
+  $,
+  loadShowcase: (id, opts) => loadShowcaseProject(id, opts),
+  runSimulation: async ({ suppressAutoWave = true } = {}) => {
+    await waitEngineReady();
+    const done = new Promise(resolve => simRunWaiters.push(resolve));
+    if (!execute('run', { suppressAutoWave, quiet: true })) return { ok: false };
+    return await done;
+  },
+  elaborateModule: async moduleName => {
+    const select = $('schem-module');
+    if (moduleName && [...select.options].some(opt => opt.value === moduleName)) select.value = moduleName;
+    await schematic.elaborate();
+  },
+  showPanel,
+  selectHwArray: (path, opts = {}) => {
+    hwState.select(path);
+    if (opts.abi && $('hw-abi').getAttribute('aria-pressed') !== 'true' && !$('hw-abi').disabled) $('hw-abi').click();
+    if (opts.disasm && $('hw-disasm').getAttribute('aria-pressed') !== 'true' && !$('hw-disasm').disabled) $('hw-disasm').click();
+    if (opts.view === 'table' && $('hw-view').textContent === 'Table view' && !$('hw-view').disabled) $('hw-view').click();
+  },
+  playHwState: () => { if (!waveform.store.getState().playing) waveform.store.play(); },
+  pausePlayback: () => waveform.store.pause(),
+  stepSchem: delta => waveform.store.stepCycle(delta),
+  inspectSchemCell: name => {
+    const cell = document.querySelector(`#schem-canvas .schem-cell[data-name="${name}"]`);
+    if (cell) cell.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  },
+  clickLatchWarning: () => {
+    document.querySelector('#schem-warnings .schem-warning')?.click();
+  },
+  focusWaveSignal: path => { waveform.selectSignal(path); },
+  stepWave: delta => waveform.store.stepCycle(delta),
+  startLiveBoard: async moduleName => {
+    $('board-mode-live').click();
+    const select = $('board-module');
+    if (moduleName && [...select.options].some(opt => opt.value === moduleName)) select.value = moduleName;
+    if (!board.isLive()) $('board-live-start').click();
+    await waitUntil(() => !$('board-live-stop').disabled && !$('board-tick').disabled);
+  },
+  demoBoardTick: async () => {
+    const setSwitch = async (port, wanted) => {
+      const btn = document.querySelector(`#board-live-inputs [data-port="${port}"] .board-switch`);
+      if (!btn || btn.getAttribute('aria-checked') === String(wanted)) return;
+      btn.click();
+      await waitUntil(() => document.querySelector(`#board-live-inputs [data-port="${port}"] .board-switch`)?.getAttribute('aria-checked') === String(wanted), 5000);
+    };
+    await setSwitch('rst', false);
+    await setSwitch('en', true);
+    await setSwitch('up_down', true);
+    if (!$('board-tick').disabled) $('board-tick').click();
+  },
+  runAllTests: async () => {
+    await testRunner.runAll();
+  },
+  resetCleanWorkspace,
+  waitEngineReady,
+  getActiveProjectId: () => activeShowcaseId,
+  hasTrace: () => Boolean(waveform.store.getState().trace),
+  onOpenShowcase: openShowcase,
+  onDismissHero: () => { try { localStorage.setItem(FEATURED_DISMISSED_KEY, '1'); } catch { /* ignore */ } },
+});
+
 hydrateFromDurable();
 
 try { engine.start(); } catch (error) { engineStatus('Engine unavailable', 'st-error'); $('console-output').textContent = error.message; }
+
+const deepLink = parseDeepLink(location.search);
+if (deepLink?.kind === 'tour') tour.start(deepLink.index);
+else if (deepLink?.kind === 'showcase') tour.launchShowcaseLive(deepLink.id);
+else if (!hadSavedWorkspace && localStorage.getItem(FEATURED_DISMISSED_KEY) !== '1') tour.showFeatured();

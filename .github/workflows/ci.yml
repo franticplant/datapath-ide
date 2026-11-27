@@ -39,6 +39,7 @@ jobs:
         run: |
           node tests/unit/stage4.test.mjs
           node tests/unit/stage5.test.mjs
+          node tests/unit/tour.test.mjs
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -47,7 +48,7 @@ jobs:
         run: make check-bundle USE_MVM=0
 
   browser:
-    name: Browser suite (Playwright, sections 1-19)
+    name: Browser suite (Playwright, sections 1-20)
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[ci skip]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
