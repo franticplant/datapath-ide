@@ -76,8 +76,9 @@ browser / phone / MCP client ──https, tailnet only──▶ tailscaled (Serv
 - **Limits.** Memory, task, CPU and file-descriptor limits apply, and `node` runs with
   `--disallow-code-generation-from-strings`.
 
-`systemd-analyze security datapath-bridge.service` scores the service 0.2 ("SAFE"), or 0.1 with
-the jitless profile.
+`systemd-analyze security datapath-bridge.service` scores the service 0.2 ("SAFE"), with or without
+the jitless profile. That score rounds away the jitless profile's one extra protection,
+`MemoryDenyWriteExecute`.
 
 **Trade-offs.** `MemoryDenyWriteExecute` is off by default, because V8's JIT (and so WebAssembly,
 which the server-side Icarus tools use) needs writable+executable pages. The `--jitless` profile
