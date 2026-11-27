@@ -152,7 +152,7 @@
         </div>
       </aside>
       <div class="workspace-split">
-        <div id="editor-groups" class="editor-groups"></div>
+        <div class="editor-column"><nav id="editor-breadcrumbs" aria-label="Editor breadcrumbs"></nav><div id="editor-groups" class="editor-groups"></div></div>
         <div class="splitter horizontal" id="dock-splitter" role="separator" aria-label="Resize output" aria-orientation="horizontal" tabindex="0"></div>
         <section class="bottom">
           <div class="panel-head">
@@ -198,7 +198,7 @@
             <button id="download-vcd" class="chip" disabled>Download VCD</button>
             <button id="wave-fit" class="chip" title="Fit waveform">Fit</button>
             <button id="wave-zoom-out" class="chip" aria-label="Zoom out">−</button>
-            <input id="wave-zoom" type="range" min="1" max="10" value="1" aria-label="Waveform zoom">
+            <input id="wave-zoom" type="range" min="1" max="10" step="any" value="1" aria-label="Waveform zoom">
             <button id="wave-zoom-in" class="chip" aria-label="Zoom in">+</button>
             <label for="wave-radix">Radix</label>
             <select id="wave-radix"><option value="hex">Hex</option><option value="bin">Bin</option><option value="dec">Dec</option><option value="signed">Signed</option><option value="ascii">ASCII</option><option value="state">State</option></select>
@@ -298,6 +298,7 @@
             <button id="schem-elaborate" class="chip primary-chip" title="Elaborate to RTL with the Icarus synthesizer and lay out with elkjs">Elaborate</button>
             <button id="schem-critpath" class="chip" aria-pressed="false">Critical Path</button>
             <button id="schem-resources" class="chip" aria-pressed="false">Resources</button>
+            <button id="schem-reset-layout" class="chip" disabled>Reset Layout</button>
             <button id="schem-flatten" class="chip" aria-pressed="false" title="Flatten the hierarchy before drawing">Flatten</button>
             <nav id="schem-crumbs" class="schem-crumbs" aria-label="Hierarchy"></nav>
             <span class="spacer"></span>
@@ -477,6 +478,7 @@
 
       <label class="check-label"><input id="opt-strict-lint" type="checkbox" checked><span>Strict RTL lint</span></label>
       <label class="check-label"><input id="live-lint" type="checkbox" checked><span>Live lint</span></label>
+      <label class="check-label"><input id="opt-breadcrumbs" type="checkbox" checked><span>Editor breadcrumbs</span></label>
       <label class="check-label"><input id="inline-values" type="checkbox" checked><span>Inline waveform values</span></label>
       <div class="set-sec">Simulation</div>
       <label class="check-label"><input id="auto-switch-wave" type="checkbox" checked><span>Auto-switch to Waveform on VCD</span></label>
@@ -518,6 +520,8 @@
     </div>
   </dialog>
 
+  <dialog id="quick-open-dialog" class="palette-dialog" aria-label="Quick open"><input id="quick-open-input" type="search" placeholder="File, :line, @symbol, >command" autocomplete="off" aria-label="Quick open"><div id="quick-open-list" class="palette-list scroll" role="listbox" aria-label="Quick open results"></div></dialog>
+
   <dialog id="palette-dialog" class="palette-dialog"><input id="palette-input" type="search" placeholder="Type a command or file name…" autocomplete="off" aria-label="Command palette"><div id="palette-list" class="palette-list scroll" role="listbox"></div></dialog>
 
   <dialog id="search-dialog" class="wide-dialog search-dialog" aria-label="Search in workspace">
@@ -529,8 +533,11 @@
     <div class="search-options">
       <label class="inline-toggle"><input id="search-case" type="checkbox"> Match case</label>
       <label class="inline-toggle"><input id="search-word" type="checkbox"> Whole word</label>
+      <label class="inline-toggle"><input id="search-regex" type="checkbox"> .* Regex</label>
+      <button id="search-replace-toggle" class="chip" type="button" aria-expanded="false">Replace ▸</button>
       <output id="search-count" class="search-count"></output>
     </div>
+    <div id="search-replace-row" class="search-replace-row" hidden><input id="replace-input" type="text" placeholder="Replace with…" aria-label="Replacement text"><button id="replace-in-file" class="chip" type="button">Replace in file</button><button id="replace-all" class="chip" type="button">Replace all</button></div>
     <div id="search-results" class="search-results scroll" role="listbox" aria-label="Search results"></div>
   </dialog>
 

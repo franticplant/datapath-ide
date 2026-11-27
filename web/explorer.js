@@ -118,6 +118,8 @@ export function renderExplorer(parent, { files, folders, excluded, current, coll
       button.className = `tree-file${path === current ? ' active' : ''}`;
       button.dataset.path = path;
       button.title = path;
+      button.draggable = true;
+      button.ondragstart = event => { event.dataTransfer.setData('application/x-datapath-file', JSON.stringify({ path })); event.dataTransfer.effectAllowed = 'copy'; };
 
       const ext = (name.includes('.') ? name.split('.').pop() : 'txt').toLowerCase();
       const badge = document.createElement('span');

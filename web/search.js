@@ -30,32 +30,71 @@ export function findDefinitions(files, word) {
   return results;
 }
 
-export function searchFiles(files, query, { matchCase = false, wholeWord = false } = {}) {
+// Native regular expressions cannot be interrupted. Restrict patterns and input size to keep
+// workspace searches bounded; report rejected patterns instead of risking a frozen UI.
+function compileSearch(query, { matchCase = false, wholeWord = false, regex = false } = {}) {
+  if (regex) {
+    if (query.length > 256) throw new Error('Regex is too long (maximum 256 characters).');
+    let inClass = false, escaped = false, variable = 0, previous = '';
+    for (let i = 0; i < query.length; i++) {
+      const c = query[i];
+      if (escaped) { if (!inClass && /[1-9k]/.test(c)) throw new Error('Regex backreferences are not supported.'); escaped = false; previous = 'atom'; continue; }
+      if (c === '\\') { escaped = true; continue; }
+      if (c === '[' && !inClass) { inClass = true; continue; }
+      if (c === ']' && inClass) { inClass = false; previous = 'atom'; continue; }
+      if (inClass) continue;
+      if (c === '*' || c === '+' || (c === '?' && query[i - 1] !== '(' && !/[+*?}]/.test(query[i - 1] || ''))) {
+        if (previous === ')') throw new Error('Quantified groups are not supported in workspace regex search.');
+        if (++variable > 1) throw new Error('Use at most one variable repetition in a workspace regex.');
+        previous = 'quantifier'; continue;
+      }
+      if (c === '{') {
+        const quant = /^\{(\d+)(?:,(\d*)?)?\}/.exec(query.slice(i));
+        if (quant) {
+          const min = Number(quant[1]), max = quant[2] === undefined ? min : quant[2] === '' ? Infinity : Number(quant[2]);
+          if (previous === ')' || max > 1000 || (max !== min && ++variable > 1)) throw new Error('Regex repetition is too complex for workspace search.');
+          i += quant[0].length - 1; previous = 'quantifier'; continue;
+        }
+      }
+      previous = c;
+    }
+  }
+  const pattern = regex ? query : escapeRegExp(query);
+  const source = wholeWord ? `(?<![\\w$])(?:${pattern})(?![\\w$])` : pattern;
+  return new RegExp(source, matchCase ? 'g' : 'gi');
+}
+
+export function searchFiles(files, query, options = {}) {
   if (!query) return { results: [], truncated: false };
-  const source = wholeWord ? `(?<![\\w$])${escapeRegExp(query)}(?![\\w$])` : escapeRegExp(query);
-  const re = new RegExp(source, matchCase ? 'g' : 'gi');
+  let re;
+  try { re = compileSearch(query, options); } catch (error) { return { results: [], truncated: false, error: error.message }; }
   const results = [];
   for (const path of Object.keys(files).sort()) {
     const text = files[path];
     if (typeof text !== 'string') continue;
     const lines = text.split('\n');
     for (let i = 0; i < lines.length; i++) {
+      if (options.regex && lines[i].length > 4096) return { results: [], truncated: false, error: `Regex search is limited to lines of 4096 characters (${path}:${i + 1}).` };
       re.lastIndex = 0;
-      const match = re.exec(lines[i]);
-      if (!match) continue;
-      results.push({ file: path, line: i + 1, col: match.index + 1, text: lines[i], start: match.index, end: match.index + match[0].length });
-      if (results.length >= MAX_RESULTS) return { results, truncated: true };
+      let match;
+      while ((match = re.exec(lines[i]))) {
+        results.push({ file: path, line: i + 1, col: match.index + 1, text: lines[i], start: match.index, end: match.index + match[0].length });
+        if (results.length >= MAX_RESULTS) return { results, truncated: true };
+        if (!match[0].length) re.lastIndex = match.index + 1;
+      }
     }
   }
   return { results, truncated: false };
 }
 
-export function installSearch({ getFiles, openAt, notify }) {
+export function installSearch({ getFiles, openAt, notify, replaceFiles = null, getCurrentFile = null }) {
   const $ = id => document.getElementById(id);
   const dialog = $('search-dialog');
   let mode = 'search';        // 'search' | 'definitions'
   let definitionItems = [];
   let active = 0;
+  let searchResult = { results: [], truncated: false };
+  const options = () => ({ matchCase: $('search-case').checked, wholeWord: $('search-word').checked, regex: $('search-regex').checked });
 
   function resultButton(item, preview) {
     const button = document.createElement('button');
@@ -109,7 +148,12 @@ export function installSearch({ getFiles, openAt, notify }) {
       return;
     }
     const query = $('search-input').value;
-    const { results, truncated } = searchFiles(getFiles(), query, { matchCase: $('search-case').checked, wholeWord: $('search-word').checked });
+    searchResult = searchFiles(getFiles(), query, options());
+    const { results, truncated, error } = searchResult;
+    $('search-input').setAttribute('aria-invalid', String(Boolean(error)));
+    $('search-count').classList.toggle('is-error', Boolean(error));
+    $('replace-all').disabled = $('replace-in-file').disabled = Boolean(error || truncated || !results.length || !replaceFiles);
+    if (error) { $('search-count').textContent = error; return; }
     for (const item of results) list.append(resultButton(item, highlight(item)));
     const fileCount = new Set(results.map(item => item.file)).size;
     $('search-count').textContent = !query ? '' : results.length
@@ -126,6 +170,30 @@ export function installSearch({ getFiles, openAt, notify }) {
     render();
     $('search-input').focus();
     $('search-input').select();
+  }
+
+  function openReplace(query = '') {
+    open(query);
+    $('search-replace-row').hidden = false;
+    $('search-replace-toggle').setAttribute('aria-expanded', 'true');
+  }
+
+  async function replace(inFile) {
+    const query = $('search-input').value;
+    const snapshot = getFiles();
+    const result = searchFiles(snapshot, query, options());
+    if (result.error || result.truncated || !result.results.length || !replaceFiles) return;
+    const path = getCurrentFile?.() || result.results[active]?.file;
+    const paths = new Set(result.results.map(item => item.file).filter(file => !inFile || file === path));
+    const replacement = $('replace-input').value;
+    const updates = {};
+    for (const file of paths) {
+      const re = compileSearch(query, options());
+      updates[file] = snapshot[file].split('\n').map(line => options().regex ? line.replace(re, replacement) : line.replace(re, () => replacement)).join('\n');
+    }
+    if (!Object.keys(updates).length) return;
+    try { await replaceFiles(updates); render(); }
+    catch (error) { notify?.(`Replace failed: ${error.message}`); }
   }
 
   // Jumps directly for a single match; lists several; reports none.
@@ -146,6 +214,10 @@ export function installSearch({ getFiles, openAt, notify }) {
   $('search-input').addEventListener('input', () => { mode = 'search'; $('search-title').textContent = 'Search in Workspace'; render(); });
   $('search-case').onchange = render;
   $('search-word').onchange = render;
+  $('search-regex').onchange = render;
+  $('search-replace-toggle').onclick = () => { const row = $('search-replace-row'); row.hidden = !row.hidden; $('search-replace-toggle').setAttribute('aria-expanded', String(!row.hidden)); };
+  $('replace-in-file').onclick = () => replace(true);
+  $('replace-all').onclick = () => replace(false);
   $('close-search').onclick = () => dialog.close();
   dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
   $('search-input').addEventListener('keydown', event => {
@@ -157,5 +229,5 @@ export function installSearch({ getFiles, openAt, notify }) {
     }
   });
 
-  return { open, goToDefinition };
+  return { open, openSearch: open, openReplace, goToDefinition, showDefinitions: goToDefinition, searchFiles };
 }

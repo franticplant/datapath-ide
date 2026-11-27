@@ -29,6 +29,7 @@ const defaults = () => ({
   liveLint: true,
   strictRtlLint: true,
   inlineValues: true,
+  showBreadcrumbs: true,
   autoSwitchWave: true,
   autoClearConsole: true,
   autoScrollConsole: true,
@@ -120,7 +121,7 @@ export function installLayout(groups, onLayoutChange = null) {
     state.kbRows = Number(state.kbRows) === 2 ? 2 : 1;
 
     for (const flag of ['wrap', 'emacs', 'explorerHidden', 'inspectorHidden', 'dockHidden', 'zen']) state[flag] = state[flag] === true;
-    for (const flag of ['showLineNumbers', 'showFoldGutter', 'showActiveLine', 'showStatusBar', 'keybarOn', 'liveLint', 'strictRtlLint', 'inlineValues', 'autoSwitchWave', 'autoClearConsole', 'autoScrollConsole']) {
+    for (const flag of ['showLineNumbers', 'showFoldGutter', 'showActiveLine', 'showStatusBar', 'keybarOn', 'liveLint', 'strictRtlLint', 'inlineValues', 'showBreadcrumbs', 'autoSwitchWave', 'autoClearConsole', 'autoScrollConsole']) {
       state[flag] = state[flag] !== false;
     }
     state.mode = ['edit', 'run', 'wave', 'zen', 'custom'].includes(state.mode) ? state.mode : 'custom';
@@ -189,6 +190,7 @@ export function installLayout(groups, onLayoutChange = null) {
     if ($('kb-rows')) $('kb-rows').value = String(state.kbRows);
     $('opt-strict-lint').checked = state.strictRtlLint;
     $('live-lint').checked = state.liveLint;
+    $('opt-breadcrumbs').checked = state.showBreadcrumbs;
     $('inline-values').checked = state.inlineValues;
     $('auto-switch-wave').checked = state.autoSwitchWave;
     $('auto-clear-console').checked = state.autoClearConsole;
@@ -290,6 +292,7 @@ export function installLayout(groups, onLayoutChange = null) {
     ['live-lint', 'liveLint'],
     ['opt-strict-lint', 'strictRtlLint'],
     ['inline-values', 'inlineValues'],
+    ['opt-breadcrumbs', 'showBreadcrumbs'],
     ['auto-switch-wave', 'autoSwitchWave'],
     ['auto-clear-console', 'autoClearConsole'],
     ['auto-scroll-console', 'autoScrollConsole'],

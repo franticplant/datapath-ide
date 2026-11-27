@@ -93,7 +93,7 @@ function wirePath(points) {
 
 // onNavigate: the drill-down path changed (history entry); overlay: { opened, closed } for the inspector card;
 // getStateName(path, bits): FSM state name or null; onShowArray(path): open the State tab on a captured array.
-export function installSchematic({ store, getFiles, getRtlSources, getSettings, getStandard, getTopHint, createWorker, onJump, notify, onNavigate = null, overlay = null, getStateName = null, onShowArray = null, onProgress = null, onElaborated = null }) {
+export function installSchematic({ store, getFiles, getRtlSources, getSettings, getStandard, getTopHint, createWorker, onJump, notify, onNavigate = null, overlay = null, getStateName = null, onShowArray = null, onProgress = null, onElaborated = null, onPlotSignal = null }) {
   const $ = id => document.getElementById(id);
   const S = store.getState();
   const panel = $('schematic');
@@ -103,6 +103,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
   const pending = new Map();
   let design = null;        // { topModule, modules, flatten }
   let graph = null;         // laid-out graph currently shown
+  const manualOffsets = new Map(); // module -> node ID -> displacement from ELK
+  let originalNodes = new Map(), originalEdges = new Map();
   let lastResources = null, lastCriticalPath = null;
   let criticalEnabled = false, resourcesEnabled = false;
   let crumbs = [];          // [{ label, module }]
@@ -289,6 +291,41 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     return item;
   }
 
+  function findPlotSignal(scope, name) {
+    if (!name || !S.trace) return null;
+    return store.signalByPath(scope ? `${scope}.${name}` : name)
+      || S.trace.signals.find(signal => signal.path === name || signal.path.endsWith(`.${name}`)) || null;
+  }
+  function attachSignalDrag(element, signal) {
+    element.draggable = true;
+    element.title = `Drag ${signal.path} to the waveform`;
+    element.ondragstart = event => {
+      event.dataTransfer.setData('application/x-datapath-signal', JSON.stringify({ path: signal.path, name: signal.path.split('.').at(-1) }));
+      event.dataTransfer.setData('text/plain', signal.path); event.dataTransfer.effectAllowed = 'copy';
+    };
+  }
+  function plotSignal(signal) {
+    if (onPlotSignal) onPlotSignal(signal.path);
+    else { document.querySelector('[data-panel="waveform"]')?.click(); document.dispatchEvent(new CustomEvent('datapath:plot-signal', { detail: signal.path })); }
+  }
+  // The stable inspector element keeps pointer capture even when live values rerender its header.
+  let inspectorDrag = null;
+  inspector.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.target.closest('header') || event.target.closest('button')) return;
+    const stage = panel.querySelector('.schem-stage'); const stageBox = stage.getBoundingClientRect(), card = inspector.getBoundingClientRect();
+    inspectorDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: card.left - stageBox.left, top: card.top - stageBox.top };
+    inspector.setPointerCapture(event.pointerId); inspector.classList.add('is-dragging'); event.preventDefault();
+  });
+  inspector.addEventListener('pointermove', event => {
+    if (!inspectorDrag || event.pointerId !== inspectorDrag.id) return;
+    const stage = panel.querySelector('.schem-stage');
+    const left = Math.max(0, Math.min(stage.clientWidth - inspector.offsetWidth, inspectorDrag.left + event.clientX - inspectorDrag.x));
+    const top = Math.max(0, Math.min(stage.clientHeight - inspector.offsetHeight, inspectorDrag.top + event.clientY - inspectorDrag.y));
+    inspector.style.left = `${left}px`; inspector.style.top = `${top}px`; inspector.style.right = 'auto'; inspector.style.bottom = 'auto';
+  });
+  const finishInspectorDrag = event => { if (inspectorDrag?.id !== event.pointerId) return; inspectorDrag = null; inspector.classList.remove('is-dragging'); };
+  inspector.addEventListener('pointerup', finishInspectorDrag); inspector.addEventListener('pointercancel', finishInspectorDrag);
+
   function renderInspector() {
     if (!inspected || !graph) return;
     const scope = S.trace ? scopeFor() : null;
@@ -324,8 +361,12 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
       body.push(note);
       const table = document.createElement('table');
       table.className = 'si-pins';
+      let firstSignal = null;
       for (const port of node.ports) {
         const row = table.insertRow();
+        const edge = graph.edges.find(item => (item.to === port.id || item.from === port.id) && item.slice && !item.slice.hidden);
+        const signal = findPlotSignal(scope, node.kind === 'port' ? node.name : edge?.slice?.name);
+        if (signal) { attachSignalDrag(row, signal); firstSignal ||= signal; }
         row.dataset.pin = port.name;
         const name = row.insertCell();
         name.textContent = node.kind === 'port' ? node.name : port.name;
@@ -343,6 +384,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
         value.textContent = scope ? hex(values.get(port.name)) : '—';
       }
       body.push(table);
+      if (firstSignal) actions.append(button('Plot', () => plotSignal(firstSignal), { data: { action: 'plot' } }));
       const where = parseSrc(node.src);
       // The card closes first so the jump reuses its history entry: Back then returns straight to the diagram.
       if (where) actions.append(button('Jump to Code', () => { closeInspector(); onJump(where.file, where.line); }, { data: { action: 'jump' } }));
@@ -354,6 +396,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
       title.textContent = netName(edge);
       sub.textContent = `net · ${edge.width} bit${edge.width === 1 ? '' : 's'} · ${members.length} segment${members.length === 1 ? '' : 's'}`;
       inspector.dataset.kind = 'net';
+      const signal = findPlotSignal(scope, edge.slice?.name);
+      if (signal) actions.append(button('Plot', () => plotSignal(signal), { data: { action: 'plot' } }));
       const bits = scope && edge.slice && !edge.slice.hidden && !edge.slice.partial ? netBits(scope, edge.slice) : edge.constant ? [...edge.bits].reverse().join('') : null;
       const note = document.createElement('p');
       note.className = 'si-explain is-equation';
@@ -366,6 +410,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
       for (const [role, ids] of [['driver', drivers], ['load', loads]]) {
         for (const id of ids) {
           const row = table.insertRow();
+          if (signal) attachSignalDrag(row, signal);
           const name = row.insertCell();
           const link = document.createElement('button');
           link.type = 'button';
@@ -736,12 +781,59 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     return true;
   }
 
+  // ------------------------------------------------ manual node layout
+  function currentOffsets() {
+    if (!manualOffsets.has(graph.module)) manualOffsets.set(graph.module, new Map());
+    return manualOffsets.get(graph.module);
+  }
+  function reroute(edge, sourceOffset, targetOffset) {
+    const points = originalEdges.get(edge.id); if (!points?.length) return [];
+    const [sx, sy] = points[0], [tx, ty] = points.at(-1);
+    const x1 = sx + (sourceOffset?.dx || 0), y1 = sy + (sourceOffset?.dy || 0);
+    const x2 = tx + (targetOffset?.dx || 0), y2 = ty + (targetOffset?.dy || 0);
+    if (x2 > x1 + 20) { const mid = (x1 + x2) / 2; return [[x1, y1], [mid, y1], [mid, y2], [x2, y2]]; }
+    const outside = Math.max(x1, x2) + 24, jog = Math.min(y1, y2) - 24;
+    return [[x1, y1], [outside, y1], [outside, jog], [x2 - 24, jog], [x2 - 24, y2], [x2, y2]];
+  }
+  function applyManualGeometry(changedId = null) {
+    if (!graph || !index) return;
+    const offsets = currentOffsets();
+    for (const node of graph.nodes) {
+      if (changedId && node.id !== changedId) continue;
+      const base = originalNodes.get(node.id), offset = offsets.get(node.id);
+      if (!base) continue;
+      node.x = base.x + (offset?.dx || 0); node.y = base.y + (offset?.dy || 0);
+      nodeEls.get(node.id)?.setAttribute('transform', `translate(${node.x} ${node.y})`);
+    }
+    for (const edge of graph.edges) {
+      const from = index.nodeOfPin.get(edge.from), to = index.nodeOfPin.get(edge.to);
+      if (changedId && changedId !== from && changedId !== to) continue;
+      const fromOffset = offsets.get(from), toOffset = offsets.get(to);
+      edge.points = fromOffset || toOffset ? reroute(edge, fromOffset, toOffset) : (originalEdges.get(edge.id) || []).map(point => [...point]);
+      const d = wirePath(edge.points);
+      wireEls.get(edge.id)?.setAttribute('d', d);
+      canvas.querySelector(`.schem-hit[data-edge="${edge.id}"]`)?.setAttribute('d', d);
+      const pill = canvas.querySelector(`.schem-width[data-edge="${edge.id}"]`);
+      if (pill && edge.points.length) pill.setAttribute('transform', `translate(${edge.points[0][0] + 10} ${edge.points[0][1] - 9})`);
+      const badge = canvas.querySelector(`.schem-value[data-edge="${edge.id}"]`);
+      if (badge && edge.points.length > 1) { const [x, y] = edge.points.at(-1), [prev] = edge.points.at(-2); badge.setAttribute('transform', `translate(${Math.max(prev, x - 60)} ${y - 9})`); }
+    }
+    $('schem-reset-layout').disabled = offsets.size === 0;
+  }
+  $('schem-reset-layout').onclick = () => {
+    if (!graph) return;
+    currentOffsets().clear(); applyManualGeometry(); renderMinimap();
+  };
+
   // ------------------------------------------------ drawing
   function showGraph(next) {
     graph = next;
+    originalNodes = new Map(graph.nodes.map(node => [node.id, { x: node.x, y: node.y }]));
+    originalEdges = new Map(graph.edges.map(edge => [edge.id, edge.points.map(point => [...point])]));
     closeInspector();
     selection = null;
     buildIndex();
+    applyManualGeometry();
     renderCrumbs();
     draw();
     fit();
@@ -781,7 +873,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
         // Width pill near the driver end, value badge (filled by the overlay) near the sink end.
         const [x, y] = edge.points[0];
         const text = String(edge.width);
-        const pill = el('g', { class: 'schem-width', transform: `translate(${x + 10} ${y - 9})` });
+        const pill = el('g', { class: 'schem-width', 'data-edge': edge.id, transform: `translate(${x + 10} ${y - 9})` });
         pill.append(el('rect', { x: -1, y: -6, width: text.length * 6 + 6, height: 11, rx: 5.5 }), el('text', { x: 2, y: 2.5 }, text));
         labels.append(pill);
         const [ex, ey] = edge.points.at(-1);
@@ -944,6 +1036,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
   const pointers = new Map();
   let drag = null;
   let pinch = null;
+  let nodeDrag = null, nodeFrame = 0;
   let dragMoved = false;
   canvas.addEventListener('wheel', event => {
     if (!view) return;
@@ -963,11 +1056,24 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
   canvas.addEventListener('pointerdown', event => {
     lastPointerType = event.pointerType || 'mouse';
     if (!view || (event.pointerType === 'mouse' && event.button !== 0 && event.button !== 1)) return;
+    const cell = event.target.closest?.('.schem-cell');
+    if (cell && event.button === 0 && pointers.size === 0) {
+      const id = cell.dataset.node, original = currentOffsets().get(id) || { dx: 0, dy: 0 };
+      nodeDrag = { id, pointer: event.pointerId, x: event.clientX, y: event.clientY, start: toCanvas(event), original, moved: false, last: null };
+      dragMoved = false; return;
+    }
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.size === 1) { drag = { x: event.clientX, y: event.clientY, view: { ...view }, id: event.pointerId }; dragMoved = false; }
     else if (pointers.size === 2) { for (const id of pointers.keys()) capture(id); startPinch(); }
   });
   canvas.addEventListener('pointermove', event => {
+    if (nodeDrag && nodeDrag.pointer === event.pointerId) {
+      if (!nodeDrag.moved && Math.hypot(event.clientX - nodeDrag.x, event.clientY - nodeDrag.y) < 6) return;
+      if (!nodeDrag.moved) { nodeDrag.moved = true; dragMoved = true; capture(event.pointerId); nodeEls.get(nodeDrag.id)?.classList.add('is-dragging'); }
+      nodeDrag.last = toCanvas(event);
+      if (!nodeFrame) nodeFrame = requestAnimationFrame(() => { nodeFrame = 0; updateNodeDrag(); });
+      return;
+    }
     if (!pointers.has(event.pointerId)) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     const rect = canvas.getBoundingClientRect();
@@ -990,7 +1096,18 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     if (!dragMoved) { dragMoved = true; fittedToCanvas = false; capture(drag.id); canvas.classList.add('is-panning'); }
     setView({ ...drag.view, x: drag.view.x - dx / rect.width * drag.view.w, y: drag.view.y - dy / rect.height * drag.view.h });
   });
+  function updateNodeDrag() {
+    if (!nodeDrag?.last || !graph) return;
+    const dx = nodeDrag.original.dx + nodeDrag.last[0] - nodeDrag.start[0], dy = nodeDrag.original.dy + nodeDrag.last[1] - nodeDrag.start[1];
+    currentOffsets().set(nodeDrag.id, { dx, dy }); applyManualGeometry(nodeDrag.id);
+  }
   const endPointer = event => {
+    if (nodeDrag && nodeDrag.pointer === event.pointerId) {
+      if (nodeFrame) { cancelAnimationFrame(nodeFrame); nodeFrame = 0; updateNodeDrag(); }
+      nodeEls.get(nodeDrag.id)?.classList.remove('is-dragging');
+      if (nodeDrag.moved) { renderMinimap(); setTimeout(() => { dragMoved = false; }, 0); }
+      nodeDrag = null; return;
+    }
     pointers.delete(event.pointerId);
     if (pointers.size < 2 && pinch) {
       pinch = null;
@@ -1193,6 +1310,10 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
   if (stage && typeof ResizeObserver === 'function') {
     new ResizeObserver(() => {
       if (!graph || !view || panel.hidden) return;
+      if (inspector.style.left && !inspector.hidden) {
+        inspector.style.left = `${Math.max(0, Math.min(stage.clientWidth - inspector.offsetWidth, parseFloat(inspector.style.left) || 0))}px`;
+        inspector.style.top = `${Math.max(0, Math.min(stage.clientHeight - inspector.offsetHeight, parseFloat(inspector.style.top) || 0))}px`;
+      }
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 40 || rect.height <= 40) return;
       if (Math.abs(rect.width - lastStageW) <= 4 && Math.abs(rect.height - lastStageH) <= 4) return;

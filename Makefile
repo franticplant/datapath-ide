@@ -37,8 +37,8 @@ serve: ## Serve web/ on http://127.0.0.1:$(PORT)/
 
 test: check test-unit test-smoke test-correctness test-browser test-ux ## Run every check (what CI runs)
 
-test-unit: ## Unit tests (assembler, decoder, FSM, themes, showcase, history, tour)
-	$(NODE) sh -c 'node tests/unit/stage4.test.mjs && node tests/unit/stage5.test.mjs && node tests/unit/tour.test.mjs && node tests/unit/stage-b.test.mjs && node tests/unit/stage-c.test.mjs'
+test-unit: ## Unit tests (assembler, decoder, FSM, formatter, RTL linter/metrics/quickfix, themes, showcase, tour)
+	$(NODE) sh -c 'node tests/unit/stage4.test.mjs && node tests/unit/stage5.test.mjs && node tests/unit/tour.test.mjs && node tests/unit/stage-b.test.mjs && node tests/unit/stage-c.test.mjs && node tests/unit/stage-e.test.mjs'
 
 test-smoke: ## Icarus WASM smoke test against web/engine (WASM_DIR=build/wasm for a fresh build)
 	$(NODE) node engine/smoke.mjs

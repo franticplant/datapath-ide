@@ -309,6 +309,49 @@ export function installBoard({ store, getFiles, getLiveSources, getSettings, get
   let nextWidget = 1;
   let frame = 0;
   let live = null;           // { client, module, ports, clock, state, busy, timer }
+  const orderKey = 'datapath.board-order.v1';
+  let boardOrder = {};
+  try { const saved = JSON.parse(localStorage.getItem(orderKey)); if (saved && typeof saved === 'object' && !Array.isArray(saved)) boardOrder = saved; } catch { /* Invalid saved order. */ }
+  let boardDrag = null;
+  function arrange(host, key) {
+    const saved = Array.isArray(boardOrder[key]) ? boardOrder[key] : [];
+    const cards = [...host.children].filter(item => item.dataset.orderKey);
+    cards.sort((a, b) => {
+      const ai = saved.indexOf(a.dataset.orderKey), bi = saved.indexOf(b.dataset.orderKey);
+      return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi);
+    });
+    cards.forEach(card => host.append(card));
+    for (const card of cards) {
+      const handle = card.querySelector('header, .board-input-name') || card;
+      handle.draggable = true;
+      handle.title = handle.title || 'Drag to reorder';
+      handle.addEventListener('dragstart', event => {
+        if (event.target.closest('button, input, select, textarea')) { event.preventDefault(); return; }
+        boardDrag = { card, host, key, orderKey: card.dataset.orderKey }; card.classList.add('is-dragging');
+        event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.dataset.orderKey);
+      });
+      handle.addEventListener('dragend', () => { card.classList.remove('is-dragging'); host.querySelectorAll('.is-drop-before').forEach(item => item.classList.remove('is-drop-before')); boardDrag = null; });
+      card.addEventListener('dragover', event => {
+        if (!boardDrag || boardDrag.host !== host || boardDrag.orderKey === card.dataset.orderKey) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+        host.querySelectorAll('.is-drop-before').forEach(item => item.classList.remove('is-drop-before'));
+        card.classList.add('is-drop-before');
+      });
+      card.addEventListener('dragleave', event => { if (!card.contains(event.relatedTarget)) card.classList.remove('is-drop-before'); });
+      card.addEventListener('drop', event => {
+        if (!boardDrag || boardDrag.host !== host || boardDrag.orderKey === card.dataset.orderKey) return;
+        event.preventDefault(); event.stopPropagation();
+        // A simulation tick can replace every card while the drag is in progress.
+        const source = [...host.children].find(item => item.dataset.orderKey === boardDrag.orderKey);
+        if (!source || !card.isConnected || source === card) { card.classList.remove('is-drop-before'); boardDrag = null; return; }
+        host.insertBefore(source, card); card.classList.remove('is-drop-before'); source.classList.remove('is-dragging');
+        boardOrder[key] = [...host.children].map(item => item.dataset.orderKey).filter(Boolean);
+        try { localStorage.setItem(orderKey, JSON.stringify(boardOrder)); } catch { /* Reordering still works for this session. */ }
+        boardDrag = null;
+      });
+    }
+  }
+
 
   // ------------------------------------------------ replay
   const leaf = path => path.split('.').at(-1);
@@ -340,15 +383,18 @@ export function installBoard({ store, getFiles, getLiveSources, getSettings, get
     $('board-play').setAttribute('aria-pressed', String(S.playing));
     $('board-play').textContent = S.playing ? '❚❚' : '▶';
     if (!S.trace) return;
+    const occurrences = new Map();
     for (const widget of widgets) {
       const signal = store.signalByPath(widget.path);
       if (!signal) continue;
+      const base = `${widget.path}|${widget.kind}`; const count = occurrences.get(base) || 0; occurrences.set(base, count + 1);
       host.append(widgetCard({
         kind: widget.kind, label: leaf(widget.path), title: widget.path, width: signal.width, bits: bitsFor(signal),
-        attrs: { signal: widget.path, widget: String(widget.id) },
+        attrs: { signal: widget.path, widget: String(widget.id), orderKey: `${base}|${count}` },
         onRemove: () => { widgets = widgets.filter(item => item !== widget); renderReplay(); },
       }));
     }
+    arrange(host, `replay:${S.trace?.signals[0]?.path.split('.')[0] || S.rawLabel || 'trace'}`);
   }
 
   function renderSignalOptions() {
@@ -402,6 +448,7 @@ export function installBoard({ store, getFiles, getLiveSources, getSettings, get
     const wrap = document.createElement('div');
     wrap.className = 'board-input';
     wrap.dataset.port = port.name;
+    wrap.dataset.orderKey = `input:${port.name}`;
     const label = document.createElement('span');
     label.className = 'board-input-name';
     label.textContent = port.width > 1 ? `${port.name}[${port.width - 1}:0]` : port.name;
@@ -457,6 +504,7 @@ export function installBoard({ store, getFiles, getLiveSources, getSettings, get
       const card = document.createElement('section');
       card.className = 'board-widget board-mem';
       card.dataset.array = array.path;
+      card.dataset.orderKey = `array:${array.path}`;
       const head = document.createElement('header');
       const name = document.createElement('span');
       name.className = 'board-widget-name';
@@ -500,9 +548,11 @@ export function installBoard({ store, getFiles, getLiveSources, getSettings, get
     for (const port of live.ports) {
       if (port.dir === 'input') continue;
       const bits = liveBits(port.name, port.width);
-      outputs.append(widgetCard({ kind: port.width === 1 ? 'led' : 'seg', label: port.name, width: port.width, bits, attrs: { port: port.name } }));
+      outputs.append(widgetCard({ kind: port.width === 1 ? 'led' : 'seg', label: port.name, width: port.width, bits, attrs: { port: port.name, orderKey: `output:${port.name}` } }));
     }
     renderLiveArrays(outputs);
+    arrange(inputs, `live:${live.module}:inputs`);
+    arrange(outputs, `live:${live.module}:outputs`);
   }
 
   function renderModules() {

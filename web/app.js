@@ -1,3 +1,5 @@
+import { computeQuickFix, applyQuickFix, extractFileSymbols, buildInstantiationTemplate } from './rtl-quickfix.js';
+import { installQuickOpen } from './quick-open.js';
 import { lintRtl } from './rtl-linter.js';
 import { buildModuleHierarchy } from './hierarchy.js';
 import { computeInlineValues } from './inline-values.js';
@@ -58,6 +60,10 @@ let nav = null;             // Back / Forward history (nav-history.js), created 
 let tour = null;            // Featured showcase & 6-chapter interactive tour controller (tour.js)
 let activeShowcaseId = null;
 let fsmMap = null;
+let quickOpen = null;
+let breadcrumbsEnabled = true;
+let lastProblemKey = null;
+const symbolCache = new Map();
 
 const FEATURED_DISMISSED_KEY = 'datapath.featured.dismissed';
 function dismissFeatured() {
@@ -306,27 +312,132 @@ function showInspectPopover(token, lineNumber, coords, filename = current) {
   }
 }
 
+function symbolsFor(path) {
+  const source = files[path] || '';
+  const cached = symbolCache.get(path);
+  if (cached?.source === source) return cached.symbols;
+  const symbols = extractFileSymbols(source);
+  symbolCache.set(path, { source, symbols });
+  return symbols;
+}
+
+function updateProjectFiles(updates) {
+  const entries = Object.entries(updates);
+  if (entries.some(([path, text]) => !Object.hasOwn(files, path) || typeof text !== 'string')) throw new Error('A replacement file is no longer available.');
+  const changed = entries.filter(([path, text]) => files[path] !== text);
+  if (!changed.length) return;
+  for (const [path, text] of changed) { files[path] = text; symbolCache.delete(path); groups.syncDocument(path, text, null); }
+  const paths = new Set(changed.map(([path]) => path));
+  icarusDiagnostics = icarusDiagnostics.filter(item => !paths.has(item.file));
+  suggestModules(); render(); refreshRtlProblems(); renderBreadcrumbs(); scheduleFsmRefresh(); scheduleInline();
+  const lintFile = changed.find(([path]) => /\.(?:v|sv)$/i.test(path));
+  if (lintFile) scheduleLint(lintFile[0]);
+  save();
+}
+function applyDiagnosticFix(item) {
+  const source = files[item.file];
+  const fix = computeQuickFix(source, item);
+  if (!fix) { showToast('No quick fix available'); return false; }
+  const updated = applyQuickFix(source, fix);
+  if (updated === source) return false;
+  updateProjectFiles({ [item.file]: updated }); showToast(fix.title); return true;
+}
+function quickFixAtCursor(editor = groups.activeEditor()) {
+  const path = editor?.getFilename(), line = editor?.getCursorPos().line;
+  const candidates = diagnostics.filter(item => item.file === path && computeQuickFix(files[path], item)).sort((a, b) => Math.abs(a.line - line) - Math.abs(b.line - line) || a.line - b.line);
+  if (!candidates.length) { showToast('No quick fix available'); return false; }
+  return applyDiagnosticFix(candidates[0]);
+}
+function nextProblem(direction = 1) {
+  const items = diagnostics.filter(item => Object.hasOwn(files, item.file) && item.line > 0).slice().sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || String(a.message).localeCompare(String(b.message)));
+  if (!items.length) { lastProblemKey = null; showToast('No problems'); return; }
+  const key = item => JSON.stringify([item.file, item.line, item.rule || '', item.message]);
+  const previous = items.findIndex(item => key(item) === lastProblemKey && item.file === current && item.line === cursorState.line);
+  let index;
+  if (previous >= 0) index = (previous + (direction < 0 ? -1 : 1) + items.length) % items.length;
+  else {
+    const relative = item => item.file.localeCompare(current) || item.line - cursorState.line;
+    index = direction < 0 ? items.findLastIndex(item => relative(item) < 0) : items.findIndex(item => relative(item) > 0);
+    if (index < 0) index = direction < 0 ? items.length - 1 : 0;
+  }
+  lastProblemKey = key(items[index]); openAt(items[index].file, items[index].line);
+}
+function instantiateModule(payload, pos = null, editor = groups.activeEditor()) {
+  let data = payload;
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch { data = { moduleName: data }; } }
+  if (!editor || !/\.(?:v|sv)$/i.test(editor.getFilename() || '')) { showToast('Open a Verilog file to instantiate a module'); return false; }
+  if (typeof data?.moduleName !== 'string') { showToast('Module declaration not found'); return false; }
+  const sources = data.file && Object.hasOwn(files, data.file) ? { [data.file]: files[data.file], ...files } : files;
+  const text = buildInstantiationTemplate(data.moduleName, sources, { tabWidth: layout.getState().tabWidth });
+  if (!text) { showToast('Module declaration not found'); return false; }
+  editor.insertText(text, pos); return true;
+}
+function makeHover(word, line, lineText, path) {
+  const symbol = symbolsFor(path).filter(item => item.name === word).sort((a, b) => (b.line <= line ? b.line : -b.line) - (a.line <= line ? a.line : -a.line))[0];
+  const signal = waveform?.lookupSignal(word);
+  const items = diagnostics.filter(item => item.file === path && item.line === line);
+  const ref = lookupHint(lineText, word);
+  if (!symbol && !signal && !items.length && !ref) return null;
+  const card = document.createElement('div'); card.className = 'cm-hover-card';
+  const title = document.createElement('strong'); title.textContent = word; card.append(title);
+  const add = text => { const row = document.createElement('div'); row.textContent = text; card.append(row); };
+  if (symbol) add([symbol.kind, symbol.direction, symbol.width ? `${symbol.width} bits` : '', symbol.detail].filter(Boolean).join(' · '));
+  if (signal) add(`${signal.formatted.state || signal.formatted.hex} at ${signal.time} (${signal.marker})`);
+  for (const item of items) {
+    add(`${item.rule ? `[${item.rule}] ` : ''}${item.message}`);
+    if (computeQuickFix(files[path], item)) { const fix = document.createElement('button'); fix.type = 'button'; fix.className = 'chip'; fix.textContent = 'Fix'; fix.onclick = () => applyDiagnosticFix(item); card.append(fix); }
+  }
+  if (!symbol && !signal && ref) add(`${ref.format} — ${ref.desc}`);
+  return card;
+}
+function renderBreadcrumbs() {
+  const bar = $('editor-breadcrumbs'); if (!bar) return;
+  bar.hidden = !breadcrumbsEnabled; bar.replaceChildren();
+  if (!breadcrumbsEnabled || !current) return;
+  const parts = [{ name: current, run: () => quickOpen?.open() }];
+  const enclosing = symbolsFor(current).filter(item => ['module', 'function', 'task', 'always'].includes(item.kind) && item.line <= cursorState.line && (!item.endLine || item.endLine >= cursorState.line));
+  const module = enclosing.filter(item => item.kind === 'module').at(-1);
+  if (module) parts.push({ name: module.name, run: () => openAt(current, module.line) });
+  const block = enclosing.filter(item => item.kind !== 'module').at(-1);
+  if (block) parts.push({ name: block.name, run: () => openAt(current, block.line) });
+  parts.push({ name: '@', run: () => quickOpen?.open('@') });
+  parts.forEach((part, index) => {
+    if (index) { const separator = document.createElement('span'); separator.textContent = '›'; bar.append(separator); }
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = part.name; button.title = part.name; button.onclick = part.run; bar.append(button);
+  });
+}
+
 document.addEventListener('pointerdown', e => {
   const pop = $('value-popover');
   if (pop && !pop.hidden && !pop.contains(e.target)) hidePopover();
 });
 
 const groups = new EditorGroups($('editor-groups'), {
-  createEditor: (host, { onChange, onPosition }) => createEditor(host, onChange, onPosition, {
-    getCompletions: collectCompletions,
-    onInspectToken: showInspectPopover,
-    onFormat: formatActive,
-    onFocus: () => document.body.classList.add('typing'),
-    onBlur: () => setTimeout(() => {
-      if (!document.activeElement?.closest('.cm-editor')) document.body.classList.remove('typing');
-    }, 120),
-    onEscape: () => {
-      if (layout?.getState().zen) { layout.exitZen(); return true; }
-      return false;
-    },
-  }),
+  createEditor: (host, { onChange, onPosition }) => {
+    let editor;
+    editor = createEditor(host, onChange, onPosition, {
+      getCompletions: collectCompletions,
+      onInspectToken: showInspectPopover,
+      onFormat: formatActive,
+      onHover: (word, line, pos, view, lineText) => makeHover(word, line, lineText, editor.getFilename()),
+      onQuickFix: () => quickFixAtCursor(editor),
+      onNextProblem: direction => nextProblem(direction),
+      onDropModule: (payload, pos) => instantiateModule(payload, pos, editor),
+      onFocus: () => document.body.classList.add('typing'),
+      onBlur: () => setTimeout(() => {
+        if (!document.activeElement?.closest('.cm-editor')) document.body.classList.remove('typing');
+      }, 120),
+      onEscape: () => {
+        if (layout?.getState().zen) { layout.exitZen(); return true; }
+        return false;
+      },
+    });
+    return editor;
+  },
   hasFile: path => Object.hasOwn(files, path),
   getFile: path => files[path],
+  getFileText: path => files[path],
+  onOpenFile: (path, target) => { groups.activate(target, target.index); groups.openFile(path); renderExplorerSection(); save(); nav?.record(); },
   getDiagnostics: () => editorDiagnostics(diagnostics),
   onChange: (name, text) => {
     dismissFeatured();
@@ -337,11 +448,13 @@ const groups = new EditorGroups($('editor-groups'), {
     renderHierarchy();
     scheduleLint(name);
     scheduleInline();
+    renderBreadcrumbs();
   },
   onPosition: (line, col, lineText, word) => {
     $('cursor').textContent = `Ln ${line}, Col ${col}`;
     cursorState = { line, col, lineText: lineText || '', word: word || '' };
     updateHint();
+    renderBreadcrumbs();
   },
   onActivate: path => {
     if (path && path !== current) {
@@ -351,6 +464,7 @@ const groups = new EditorGroups($('editor-groups'), {
     }
     updateTitle();
     scheduleInline();
+    renderBreadcrumbs();
   },
   onOpenMenu: actions => {
     const list = $('group-menu-list');
@@ -427,6 +541,11 @@ $('standard').addEventListener('change', save);
 let chordK = 0;
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p' && !(e.ctrlKey && layout.getState().emacs && e.target?.closest?.('.cm-editor'))) { e.preventDefault(); quickOpen?.open(); return; }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); quickOpen?.open('@'); return; }
+  if ((mod || e.altKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); if (!groups.reopenClosedTab()) showToast('No closed tab to reopen'); return; }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); search.openReplace(); return; }
+  if (e.key === 'F8' && !mod && !e.altKey && !e.defaultPrevented) { e.preventDefault(); nextProblem(e.shiftKey ? -1 : 1); return; }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); return; }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openWorkspaceSearch(); return; }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); layout.toggleDockPosition(); return; }
@@ -1218,7 +1337,7 @@ groups.restore(current);
 render();
 suggestModules();
 renderKeybar();
-const layout = installLayout(groups, () => requestAnimationFrame(() => { updateKbFade(); refreshInline(); }));
+const layout = installLayout(groups, state => { breadcrumbsEnabled = state.showBreadcrumbs; requestAnimationFrame(() => { updateKbFade(); refreshInline(); renderBreadcrumbs(); }); });
 fitViewport();
 simulationSettings = installSimSettings(() => files, () => excluded, (path, isExcluded) => {
   if (isExcluded) excluded.add(path);
@@ -1332,7 +1451,10 @@ function renderProblems(items, summary = '') {
     if (item.hint) { const hint = document.createElement('small'); hint.className = 'problem-hint'; hint.textContent = item.hint; detail.append(hint); }
     btn.append(sev, loc, detail);
     btn.onclick = () => jumpToLine(item.file, item.line);
-    list.append(btn);
+    const row = document.createElement('div'); row.className = 'problem-row'; row.append(btn);
+    const fix = computeQuickFix(files[item.file], item);
+    if (fix) { const action = document.createElement('button'); action.type = 'button'; action.className = 'chip problem-fix'; action.textContent = 'Fix'; action.title = fix.title; action.onclick = () => applyDiagnosticFix(item); row.append(action); }
+    list.append(row);
   }
   panel.append(list);
 }
@@ -1507,6 +1629,14 @@ function buildCommands() {
     { label: `Toggle Auto-Clear Console (${s.autoClearConsole ? 'On' : 'Off'})`, hint: '', run: () => layout.update({ autoClearConsole: !s.autoClearConsole }) },
     { label: `Toggle Hide Excluded Files (${hideExcluded ? 'On' : 'Off'})`, hint: '', run: () => $('toggle-excluded-visibility').click() },
     ...THEME_ORDER.map(id => ({ label: `Theme: ${THEMES[id].name}`, hint: '', run: () => layout.update({ theme: id }) })),
+    { label: 'Quick Open', hint: 'Ctrl+P', run: () => quickOpen.open() },
+    { label: 'Go to Symbol', hint: 'Ctrl+Shift+O', run: () => quickOpen.open('@') },
+    { label: 'Quick Fix', hint: 'Ctrl+.', run: () => quickFixAtCursor() },
+    { label: 'Next Problem', hint: 'F8', run: () => nextProblem(1) },
+    { label: 'Previous Problem', hint: 'Shift+F8', run: () => nextProblem(-1) },
+    { label: 'Reopen Closed Tab', hint: 'Ctrl+Shift+T / Alt+Shift+T', run: () => { if (!groups.reopenClosedTab()) showToast('No closed tab to reopen'); } },
+    { label: 'Replace in Workspace', hint: 'Ctrl+Shift+H', run: () => search.openReplace() },
+    { label: `Toggle Breadcrumbs (${s.showBreadcrumbs ? 'On' : 'Off'})`, hint: '', run: () => layout.update({ showBreadcrumbs: !s.showBreadcrumbs }) },
     { label: 'Format Verilog', hint: 'Shift+Alt+F', run: formatActive },
     { label: `Toggle Inline Values (${s.inlineValues ? 'On' : 'Off'})`, hint: '', run: () => layout.update({ inlineValues: !s.inlineValues }) },
     { label: 'Compile Project', hint: 'Ctrl+B', run: () => { if (!$('compile').disabled) execute('compile'); } },
@@ -1661,7 +1791,8 @@ function openAt(file, line) {
   nav?.record({ force: true });
 }
 
-const search = installSearch({ getFiles: () => files, openAt, notify: showToast });
+const search = installSearch({ getFiles: () => files, openAt, notify: showToast, getCurrentFile: () => current, replaceFiles: updateProjectFiles });
+quickOpen = installQuickOpen({ getFiles: () => files, getCurrentFile: () => current, openFile, openAt, getCommands: buildCommands });
 function openWorkspaceSearch() { search.open(); }
 function goToDefinition() { search.goToDefinition(cursorState.word); }
 
@@ -1728,6 +1859,7 @@ schematic = installSchematic({
   getStateName: (path, bits) => (fsmMap ? stateNameFor(fsmMap, path, bits) : null),
   onShowArray: path => { showPanel('hw-state'); hwState.select(path); },
   onProgress: phase => tour?.setBusyText(phase),
+  onPlotSignal: path => { showPanel('waveform'); return waveform.plotSignal(path); },
   onElaborated: ({ yosysJson, files: sourceFiles, sourceFiles: included }) => {
     lastElaboratedJson = yosysJson;
     elaboratedFiles = sourceFiles;
@@ -1934,13 +2066,17 @@ function renderHierarchy() {
   if (!target) return;
   target.replaceChildren();
   for (const entry of buildModuleHierarchy(files, excluded).flat) {
+    const row = document.createElement('div'); row.className = 'hierarchy-row';
     const button = document.createElement('button');
-    button.className = 'hierarchy-item';
-    button.style.paddingLeft = `${8 + entry.depth * 14}px`;
+    button.className = 'hierarchy-item'; button.style.paddingLeft = `${8 + entry.depth * 14}px`;
     const loc = entry.instance || entry;
     button.textContent = `${entry.instance ? `${entry.instance.instance} : ` : ''}${entry.name}${entry.cyclic ? ' ↻' : ''} — ${loc.file}:${loc.line}`;
     button.onclick = () => openAt(loc.file, loc.line);
-    target.append(button);
+    button.draggable = true;
+    button.ondragstart = event => { event.dataTransfer.setData('application/x-datapath-module', JSON.stringify({ moduleName: entry.name, file: entry.file })); event.dataTransfer.effectAllowed = 'copy'; };
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'hierarchy-add'; add.textContent = '+'; add.setAttribute('aria-label', 'Instantiate module'); add.title = `Instantiate ${entry.name}`;
+    add.onclick = () => instantiateModule({ moduleName: entry.name, file: entry.file });
+    row.append(button, add); target.append(row);
   }
 }
 for (const name of ['files', 'hierarchy']) $('sidebar-' + name).onclick = () => {
@@ -1964,3 +2100,62 @@ window.addEventListener('resize', () => {
   wasPhone = phone;
 });
 if (location.protocol === 'http:' || location.protocol === 'https:') navigator.serviceWorker?.register('./sw.js').catch(() => {});
+
+// Output tabs keep their accessibility contracts while supporting direct rearrangement.
+const panelTabs = document.querySelector('.panel-tabs');
+const panelOrderKey = 'datapath.panel-order.v1';
+const panelDragType = 'application/x-datapath-panel';
+try {
+  const saved = JSON.parse(localStorage.getItem(panelOrderKey));
+  if (Array.isArray(saved)) {
+    const byName = new Map([...panelTabs.querySelectorAll('[data-panel]')].map(tab => [tab.dataset.panel, tab]));
+    for (const name of saved) if (byName.has(name)) { panelTabs.append(byName.get(name)); byName.delete(name); }
+    for (const tab of byName.values()) panelTabs.append(tab);
+  }
+} catch { /* Invalid preferences leave the default order. */ }
+function savePanelOrder() { try { localStorage.setItem(panelOrderKey, JSON.stringify([...panelTabs.querySelectorAll('[data-panel]')].map(tab => tab.dataset.panel))); } catch { /* Ignore unavailable storage. */ } }
+for (const tab of panelTabs.querySelectorAll('[data-panel]')) {
+  tab.draggable = true;
+  tab.addEventListener('dragstart', event => { event.dataTransfer.setData(panelDragType, tab.dataset.panel); event.dataTransfer.effectAllowed = 'move'; tab.classList.add('is-dragging'); });
+  tab.addEventListener('dragend', () => { panelTabs.querySelectorAll('.is-dragging, .is-drop-target').forEach(el => el.classList.remove('is-dragging', 'is-drop-target')); $('toggle-dock-side').classList.remove('is-drop-target'); });
+  tab.addEventListener('dragover', event => {
+    const types = Array.from(event.dataTransfer?.types || []);
+    if (!types.includes(panelDragType) && !(tab.dataset.panel === 'waveform' && types.includes('application/x-datapath-signal'))) return;
+    event.preventDefault(); event.stopPropagation(); tab.classList.add('is-drop-target');
+    event.dataTransfer.dropEffect = types.includes(panelDragType) ? 'move' : 'copy';
+  });
+  tab.addEventListener('dragleave', () => tab.classList.remove('is-drop-target'));
+  tab.addEventListener('drop', event => {
+    const types = Array.from(event.dataTransfer?.types || []);
+    if (types.includes(panelDragType)) {
+      event.preventDefault(); event.stopPropagation(); tab.classList.remove('is-drop-target');
+      const name = event.dataTransfer.getData(panelDragType);
+      const source = [...panelTabs.querySelectorAll('[data-panel]')].find(item => item.dataset.panel === name);
+      if (source && source !== tab) { const after = event.clientX > tab.getBoundingClientRect().left + tab.offsetWidth / 2; panelTabs.insertBefore(source, after ? tab.nextSibling : tab); savePanelOrder(); }
+    } else if (tab.dataset.panel === 'waveform' && types.includes('application/x-datapath-signal')) {
+      event.preventDefault(); event.stopPropagation(); tab.classList.remove('is-drop-target');
+      const raw = event.dataTransfer.getData('application/x-datapath-signal'); let path = raw;
+      try { const data = JSON.parse(raw); path = typeof data === 'string' ? data : data.path || data.name; } catch { /* Plain signal path. */ }
+      showPanel('waveform'); if (!waveform.plotSignal(path)) showToast('Signal not found in the current trace');
+    }
+  });
+}
+const dockSide = $('toggle-dock-side');
+dockSide.addEventListener('dragover', event => { if (Array.from(event.dataTransfer?.types || []).includes(panelDragType)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; dockSide.classList.add('is-drop-target'); } });
+dockSide.addEventListener('dragleave', () => dockSide.classList.remove('is-drop-target'));
+dockSide.addEventListener('drop', event => { if (!Array.from(event.dataTransfer?.types || []).includes(panelDragType)) return; event.preventDefault(); event.stopPropagation(); dockSide.classList.remove('is-drop-target'); layout.toggleDockPosition(); });
+
+// The waveform inspector is rebuilt as the cursor moves, so install drag handling on its stable parent.
+const signalInspector = $('signal-inspector');
+function markDraggableSignals() {
+  signalInspector.querySelectorAll('.signal-inspector-row').forEach(row => { row.draggable = true; });
+}
+new MutationObserver(markDraggableSignals).observe(signalInspector, { childList: true, subtree: true });
+markDraggableSignals();
+signalInspector.addEventListener('dragstart', event => {
+  const row = event.target.closest?.('.signal-inspector-row');
+  const path = row?.querySelector('.inspector-signal-name')?.title;
+  if (!path) return;
+  event.dataTransfer.setData('application/x-datapath-signal', JSON.stringify({ path }));
+  event.dataTransfer.setData('text/plain', path); event.dataTransfer.effectAllowed = 'copy';
+});

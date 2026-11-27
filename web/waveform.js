@@ -307,6 +307,12 @@ export function installWaveform(onStatusCopy = null) {
       ctx.fillText(formatTime(tick, S.trace.timescale), isLast ? x - 4 : x + 3, 16);
     }
     drawMarkers(ctx, colors, offset, visibleWidth);
+    for (const [name, time, color] of [['A', S.markerA, colors.primary], ['B', S.markerB, colors.accent]]) {
+      if (time === null) continue;
+      const x = xOf(time) - offset; if (x < -6 || x > visibleWidth + 6) continue;
+      ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x - 5, 1); ctx.lineTo(x + 5, 1); ctx.lineTo(x, 9); ctx.closePath(); ctx.fill();
+      ctx.font = `bold 9px ${colors.font.slice(5)}`; ctx.fillText(name, x + 4, 12);
+    }
   }
 
   // Paints every canvas whose row intersects the vertical viewport.
@@ -344,22 +350,21 @@ export function installWaveform(onStatusCopy = null) {
     }
   }
 
-  // Pointer gestures live on the full-width track, so x maps straight to time whatever the canvas window is.
+  // Trace drags select a zoom range; the ruler remains a direct marker scrubber.
   function createPointerHandler(track, path = null) {
     let gesture = null;
-    function timeAt(event) {
-      const rect = track.getBoundingClientRect();
-      const px = Math.max(0, Math.min(width, event.clientX - rect.left));
+    const pixelAt = event => Math.max(0, Math.min(width, event.clientX - track.getBoundingClientRect().left));
+    function timeAt(event, snap = true) {
+      const px = pixelAt(event);
       let target = S.trace.endTime * BigInt(Math.round(px / width * 1000000)) / 1000000n;
-      if (prefs.snap && S.selected) {
+      if (snap && prefs.snap && S.selected) {
         const signal = store.signalByPath(S.selected);
         if (signal) {
-          let bestDist = 12, bestTime = null;
+          let bestDist = 12;
           for (const change of signal.changes) {
             const dist = Math.abs(xOf(change.time) - px);
-            if (dist < bestDist) { bestDist = dist; bestTime = change.time; }
+            if (dist < bestDist) { bestDist = dist; target = change.time; }
           }
-          if (bestTime !== null) target = bestTime;
         }
       }
       return target;
@@ -368,17 +373,44 @@ export function installWaveform(onStatusCopy = null) {
       if (!S.trace || (event.button !== 0 && event.button !== 1)) return;
       event.preventDefault();
       if (path && S.selected !== path) store.selectSignal(path);
-      gesture = { pan: event.button === 1 || event.shiftKey, x: event.clientX, scroll: container.scrollLeft };
-      track.setPointerCapture(event.pointerId);
-      if (!gesture.pan) store.setMarker(timeAt(event));
+      const pan = event.button === 1 || event.shiftKey;
+      gesture = { pan, ruler: !path, x: event.clientX, startPx: pixelAt(event), startTime: timeAt(event, false), scroll: container.scrollLeft, box: null };
+      if (!pan && !path) {
+        const px = pixelAt(event);
+        const choices = [['A', S.markerA], ['B', S.markerB]].filter(([, time]) => time !== null).map(([name, time]) => ({ name, distance: Math.abs(xOf(time) - px) })).filter(item => item.distance <= 9).sort((a, b) => a.distance - b.distance || (a.name === S.activeMarker ? -1 : 1));
+        if (choices.length) store.setActiveMarker(choices[0].name);
+        store.setMarker(timeAt(event));
+      }
+      try { track.setPointerCapture(event.pointerId); } catch { /* Synthetic pointer. */ }
     });
     track.addEventListener('pointermove', event => {
       if (!gesture) return;
-      if (gesture.pan) container.scrollLeft = gesture.scroll - (event.clientX - gesture.x);
-      else store.setMarker(timeAt(event));
+      if (gesture.pan) { container.scrollLeft = gesture.scroll - (event.clientX - gesture.x); return; }
+      if (gesture.ruler) { store.setMarker(timeAt(event)); return; }
+      if (Math.abs(event.clientX - gesture.x) < 6 && !gesture.box) return;
+      if (!gesture.box) { gesture.box = document.createElement('div'); gesture.box.className = 'wave-zoom-box'; track.append(gesture.box); }
+      const px = pixelAt(event), end = timeAt(event, false), start = gesture.startTime;
+      const lo = start < end ? start : end, hi = start < end ? end : start;
+      gesture.box.style.left = `${Math.min(gesture.startPx, px)}px`;
+      gesture.box.style.width = `${Math.abs(px - gesture.startPx)}px`;
+      gesture.box.textContent = `${formatTime(lo, S.trace.timescale)} – ${formatTime(hi, S.trace.timescale)} · Δ ${formatTime(hi - lo, S.trace.timescale)}`;
     });
-    track.addEventListener('pointerup', () => { gesture = null; });
-    track.addEventListener('pointercancel', () => { gesture = null; });
+    track.addEventListener('pointerup', event => {
+      if (!gesture) return;
+      const current = gesture; gesture = null;
+      if (current.box) {
+        const end = timeAt(event, false); current.box.remove();
+        const left = Math.min(current.startPx, pixelAt(event)), right = Math.max(current.startPx, pixelAt(event));
+        if (end !== current.startTime && right - left >= 6) {
+          const oldWidth = width, visible = viewport().visibleWidth;
+          const zoom = Math.max(1, Math.min(1000, visible / ((right - left) / oldWidth) / BASE_WIDTH));
+          $('wave-zoom').max = String(Math.max(10, Math.ceil(zoom)));
+          $('wave-zoom').value = String(zoom); buildRows();
+          container.scrollTo({ left: (left / oldWidth) * width, behavior: 'smooth' });
+        }
+      } else if (!current.pan && !current.ruler) store.setMarker(timeAt(event));
+    });
+    track.addEventListener('pointercancel', () => { gesture?.box?.remove(); gesture = null; });
   }
 
   function makeTrack(canvas, path = null) {
@@ -388,6 +420,29 @@ export function installWaveform(onStatusCopy = null) {
     track.append(canvas);
     createPointerHandler(track, path);
     return track;
+  }
+
+  function installRowDrop(label, row, path) {
+    const clear = () => { for (const el of container.querySelectorAll('.is-drop-above, .is-drop-below')) el.classList.remove('is-drop-above', 'is-drop-below'); };
+    label.draggable = true;
+    label.ondragstart = event => { dragSource = path; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', path); };
+    label.ondragend = () => { dragSource = null; clear(); };
+    row.ondragover = event => {
+      if (!dragSource || dragSource === path) return;
+      event.preventDefault(); event.stopPropagation(); clear();
+      row.classList.add(event.clientY < row.getBoundingClientRect().top + row.offsetHeight / 2 ? 'is-drop-above' : 'is-drop-below');
+    };
+    row.ondragleave = event => { if (!row.contains(event.relatedTarget)) row.classList.remove('is-drop-above', 'is-drop-below'); };
+    row.ondrop = event => {
+      if (!dragSource || dragSource === path) return;
+      event.preventDefault(); event.stopPropagation();
+      const below = row.classList.contains('is-drop-below');
+      const source = dragSource; dragSource = null; clear();
+      const from = S.order.indexOf(source); if (from < 0) return;
+      S.order.splice(from, 1); const target = S.order.indexOf(path);
+      S.order.splice(target + (below ? 1 : 0), 0, source);
+      store.moveSignal(source, 0); // Notify all waveform views of the new order.
+    };
   }
 
   function buildRows() {
@@ -416,10 +471,7 @@ export function installWaveform(onStatusCopy = null) {
         const label = document.createElement('button'); label.className = 'wave-label'; label.draggable = true;
         label.textContent = `${group.collapsed ? '▸' : '▾'} ${group.name}`;
         label.onclick = () => { group.collapsed = !group.collapsed; buildRows(); };
-        label.ondragstart = event => { dragSource = path; event.dataTransfer.setData('text/plain', path); };
-        label.ondragover = event => { if (dragSource && dragSource !== path) event.preventDefault(); };
-        label.ondrop = event => { event.preventDefault(); if (dragSource && dragSource !== path) store.moveSignal(dragSource, 0, path); dragSource = null; };
-        label.ondragend = () => { dragSource = null; };
+        installRowDrop(label, row, path);
         row.append(label); fragment.append(row); continue;
       }
       if (collapsed) continue;
@@ -433,15 +485,7 @@ export function installWaveform(onStatusCopy = null) {
       label.className = 'wave-label';
       label.draggable = true;
       label.title = 'Drag to reorder';
-      label.ondragstart = event => { dragSource = path; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', path); };
-      label.ondragover = event => { if (dragSource && dragSource !== path) event.preventDefault(); };
-      label.ondrop = event => {
-        event.preventDefault();
-        const source = dragSource;
-        dragSource = null;
-        if (source && source !== path) store.moveSignal(source, 0, path);
-      };
-      label.ondragend = () => { dragSource = null; };
+      installRowDrop(label, row, path);
 
       const name = document.createElement('span');
       name.textContent = displayName(path);
@@ -636,7 +680,7 @@ export function installWaveform(onStatusCopy = null) {
     const labelW = labelWidth();
     const position = anchor === undefined ? Math.max(0, (rect.width - labelW) / 2) : Math.max(0, anchor - rect.left - labelW);
     const fraction = (container.scrollLeft + position) / width;
-    $('wave-zoom').value = String(Math.max(1, Math.min(10, value)));
+    $('wave-zoom').value = String(Math.max(1, Math.min(Number($('wave-zoom').max), value)));
     buildRows();
     container.scrollLeft = fraction * width - position;
     paint();
@@ -715,6 +759,35 @@ export function installWaveform(onStatusCopy = null) {
     S.overrides = new Map(view.overrides || []); prefs = { ...prefs, ...view.prefs }; savePrefs(); applyPrefsUI(); renderSignalTree(); buildRows(); renderInspector();
   };
   refreshViews();
+  function plotSignal(pathOrName) {
+    if (!S.trace || typeof pathOrName !== 'string' || !pathOrName) return false;
+    const signal = S.trace.signals.find(item => item.path === pathOrName)
+      || S.trace.signals.find(item => item.path.endsWith(`.${pathOrName}`))
+      || S.trace.signals.find(item => item.path.split('.').at(-1) === pathOrName.split('.').at(-1));
+    if (!signal) return false;
+    if (!S.order.includes(signal.path)) S.order.push(signal.path);
+    let currentGroup = null;
+    for (const path of S.order) { if (groups.has(path)) currentGroup = groups.get(path); if (path === signal.path) break; }
+    if (currentGroup?.collapsed) currentGroup.collapsed = false;
+    S.visible.add(signal.path); store.selectSignal(signal.path, { reveal: true });
+    renderSignalTree(); buildRows(); renderInspector();
+    rows.find(item => item.path === signal.path)?.row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return true;
+  }
+  document.addEventListener('datapath:plot-signal', event => { if (typeof event.detail === 'string') plotSignal(event.detail); });
+  const plotPanel = $('waveform');
+  plotPanel.addEventListener('dragover', event => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('application/x-datapath-signal')) return;
+    event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; plotPanel.classList.add('is-plot-drop');
+  });
+  plotPanel.addEventListener('dragleave', event => { if (!plotPanel.contains(event.relatedTarget)) plotPanel.classList.remove('is-plot-drop'); });
+  plotPanel.addEventListener('drop', event => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('application/x-datapath-signal')) return;
+    event.preventDefault(); event.stopPropagation(); plotPanel.classList.remove('is-plot-drop');
+    const raw = event.dataTransfer.getData('application/x-datapath-signal'); let name = raw;
+    try { const parsed = JSON.parse(raw); name = typeof parsed === 'string' ? parsed : parsed.path || parsed.name; } catch { /* Plain signal path. */ }
+    if (!plotSignal(name)) $('wave-error').textContent = `Signal not found: ${name || ''}`;
+  });
   $('open-vcd').onclick = () => $('vcd-input').click();
   $('download-vcd').onclick = () => {
     if (!S.rawVcd) return;
@@ -725,7 +798,7 @@ export function installWaveform(onStatusCopy = null) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  $('wave-fit').onclick = () => { if (!S.trace) return; $('wave-zoom').value = '1'; buildRows(); container.scrollLeft = 0; paint(); };
+  $('wave-fit').onclick = () => { if (!S.trace) return; $('wave-zoom').max = '10'; $('wave-zoom').value = '1'; buildRows(); container.scrollLeft = 0; paint(); };
   $('wave-zoom').oninput = () => buildRows();
   $('wave-zoom-in').onclick = () => zoomTo(Number($('wave-zoom').value) + 1);
   $('wave-zoom-out').onclick = () => zoomTo(Number($('wave-zoom').value) - 1);
@@ -784,6 +857,7 @@ export function installWaveform(onStatusCopy = null) {
     clearVcd: () => store.clearVcd(),
     currentVcd: () => S.rawVcd,
     lookupSignal,
+    plotSignal,
     selectSignal: path => store.selectSignal(path, { reveal: true }),
     togglePin: path => store.togglePin(path),
     repaint: schedulePaint,

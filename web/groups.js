@@ -1,6 +1,7 @@
 /* Split editor groups: binary split tree managing CodeMirror 6 panes and tab drag-and-drop. */
 
 const DND_MIME = 'application/x-datapath-view';
+const FILE_MIME = 'application/x-datapath-file';
 const STORAGE_KEY = 'datapath.groups.v1';
 
 export class EditorGroups {
@@ -10,6 +11,14 @@ export class EditorGroups {
     this.groups = [];
     this.nextId = 0;
     this.drag = null;
+    this.closedTabs = [];
+    this.tabMenu = null;
+    this.dismissTabMenu = event => { if (!this.tabMenu?.contains(event.target)) this.closeTabMenu(); };
+    this.onTabMenuKey = event => { if (event.key === 'Escape' && this.tabMenu) { event.preventDefault(); event.stopPropagation(); this.closeTabMenu(); } };
+    document.addEventListener('pointerdown', this.dismissTabMenu, true);
+    document.addEventListener('keydown', this.onTabMenuKey, true);
+    document.addEventListener('scroll', this.dismissTabMenuOnScroll = () => this.closeTabMenu(), true);
+    window.addEventListener('blur', this.dismissTabMenuOnScroll);
     this.maximized = false;
     this.restoring = false;
     this.visualFlags = { showLineNumbers: true, showFoldGutter: true, showActiveLine: true };
@@ -25,6 +34,11 @@ export class EditorGroups {
 
   destroy() {
     window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('pointerdown', this.dismissTabMenu, true);
+    document.removeEventListener('keydown', this.onTabMenuKey, true);
+    document.removeEventListener('scroll', this.dismissTabMenuOnScroll, true);
+    window.removeEventListener('blur', this.dismissTabMenuOnScroll);
+    this.closeTabMenu();
     for (const g of this.groups) g.editor?.destroy?.();
   }
 
@@ -72,10 +86,11 @@ export class EditorGroups {
     }, true);
 
     g.host.addEventListener('dragover', e => {
-      if (!this.drag || !Array.from(e.dataTransfer?.types || []).includes(DND_MIME)) return;
+      const types = Array.from(e.dataTransfer?.types || []);
+      if (!(this.drag && types.includes(DND_MIME)) && !types.includes(FILE_MIME)) return;
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = 'move';
+      e.dataTransfer.dropEffect = types.includes(FILE_MIME) ? 'copy' : 'move';
       g.host.dataset.drop = this.edgeForEvent(g, e);
     });
 
@@ -84,6 +99,20 @@ export class EditorGroups {
     });
 
     g.host.addEventListener('drop', e => {
+      if (Array.from(e.dataTransfer?.types || []).includes(FILE_MIME)) {
+        e.preventDefault(); e.stopPropagation();
+        const raw = e.dataTransfer.getData(FILE_MIME);
+        let path = raw;
+        try { const parsed = JSON.parse(raw); path = typeof parsed === 'string' ? parsed : parsed?.path; } catch { /* Plain path. */ }
+        const edge = this.edgeForEvent(g, e);
+        this.endDrag();
+        if (typeof path !== 'string' || !this.hooks.hasFile(path)) return;
+        const target = edge === 'center' ? g : this.split(g, edge, null);
+        if (!target) return;
+        if (this.hooks.onOpenFile) this.hooks.onOpenFile(path, target, edge);
+        else { this.activate(target, target.index); this.openFile(path); }
+        return;
+      }
       if (!this.drag) return;
       e.preventDefault();
       e.stopPropagation();
@@ -111,6 +140,8 @@ export class EditorGroups {
         target.index = target.tabs.indexOf(existing || tab);
       }
 
+      this.orderPinned(from);
+      this.orderPinned(target);
       if (!from.tabs.length && from !== target && this.groups.length > 1) this.remove(from);
       this.activate(target, target.index);
       this.persist();
@@ -220,15 +251,65 @@ export class EditorGroups {
     this.persist();
   }
 
+  // Keep the active tab selected when pinning, moving or restoring tabs.
+  orderPinned(g) {
+    const current = this.tab(g);
+    g.tabs.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+    g.index = Math.max(0, g.tabs.indexOf(current));
+  }
+
+  closeTabMenu() { this.tabMenu?.remove(); this.tabMenu = null; }
+
+  openTabMenu(g, tab, event) {
+    event.preventDefault(); this.closeTabMenu();
+    const menu = document.createElement('div'); menu.className = 'tab-context-menu'; menu.setAttribute('role', 'menu');
+    const closeMatching = predicate => {
+      const candidates = g.tabs.filter(t => !t.pinned && predicate(t));
+      for (const item of candidates) { const index = g.tabs.indexOf(item); if (index >= 0) this.closeTab(g, index); }
+    };
+    const actions = [
+      [tab.pinned ? 'Unpin Tab' : 'Pin Tab', () => { tab.pinned = !tab.pinned; this.orderPinned(g); this.refresh(); this.persist(); }],
+      ['Close', () => this.closeTab(g, g.tabs.indexOf(tab)), tab.pinned || (this.groups.length === 1 && g.tabs.length <= 1)],
+      ['Close Others', () => closeMatching(t => t !== tab)],
+      ['Close to the Right', () => { const right = new Set(g.tabs.slice(g.tabs.indexOf(tab) + 1)); closeMatching(t => right.has(t)); }],
+      ['Close All', () => closeMatching(() => true)],
+      ['Copy Path', () => { navigator.clipboard?.writeText(tab.path).catch(() => this.hooks.onToast?.('Could not copy path')); }],
+    ];
+    for (const [label, action, disabled] of actions) {
+      const button = document.createElement('button'); button.type = 'button'; button.setAttribute('role', 'menuitem'); button.textContent = label; button.disabled = Boolean(disabled);
+      button.onclick = () => { this.closeTabMenu(); action(); }; menu.append(button);
+    }
+    document.body.append(menu); this.tabMenu = menu;
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(0, Math.min(event.clientX, innerWidth - rect.width - 4))}px`;
+    menu.style.top = `${Math.max(0, Math.min(event.clientY, innerHeight - rect.height - 4))}px`;
+    menu.querySelector('button:not(:disabled)')?.focus();
+  }
+
   closeTab(g, index) {
     if (this.groups.length === 1 && g.tabs.length <= 1) return;
     const t = g.tabs[index];
-    if (!t) return;
+    if (!t || t.pinned) return;
+    const activeTab = this.tab(g);
+    this.closedTabs.push({ path: t.path, groupId: g.id });
+    if (this.closedTabs.length > 20) this.closedTabs.shift();
     g.tabs.splice(index, 1);
-    g.index = Math.max(0, Math.min(g.index, g.tabs.length - 1));
+    g.index = activeTab !== t && g.tabs.includes(activeTab) ? g.tabs.indexOf(activeTab) : Math.max(0, Math.min(index, g.tabs.length - 1));
     if (!g.tabs.length && this.groups.length > 1) this.remove(g);
     this.activate(this.groups.includes(g) ? g : this.active, g.index);
     this.persist();
+  }
+
+  reopenClosedTab() {
+    while (this.closedTabs.length) {
+      const { path, groupId } = this.closedTabs.pop();
+      if (!this.hooks.hasFile(path)) continue;
+      const target = this.groups.find(group => group.id === groupId) || this.active;
+      this.activate(target, target.index);
+      this.openFile(path);
+      return true;
+    }
+    return false;
   }
 
   split(g = this.active, edge = 'right', clonedTab = null) {
@@ -242,7 +323,7 @@ export class EditorGroups {
     const tabToOpen = edge && arguments.length < 3 && this.tab(g) ? { path: this.tab(g).path, view: null } : sourceTab;
 
     const fresh = this.createGroup();
-    if (tabToOpen) fresh.tabs.push({ path: tabToOpen.path, view: tabToOpen.view || null });
+    if (tabToOpen) fresh.tabs.push({ path: tabToOpen.path, view: tabToOpen.view || null, pinned: Boolean(tabToOpen.pinned) });
 
     const replace = node => {
       if (node.group === g) {
@@ -342,7 +423,7 @@ export class EditorGroups {
 
     g.tabs.forEach((t, idx) => {
       const wrap = document.createElement('div');
-      wrap.className = `group-tab${idx === g.index ? ' selected' : ''}`;
+      wrap.className = `group-tab${idx === g.index ? ' selected' : ''}${t.pinned ? ' is-pinned' : ''}`;
       wrap.draggable = true;
       wrap.dataset.tab = String(idx);
 
@@ -360,9 +441,12 @@ export class EditorGroups {
       close.className = 'tab-close';
       close.setAttribute('aria-label', `Close ${t.path}`);
       close.textContent = '×';
-      close.disabled = isSingleLastTab;
+      close.disabled = isSingleLastTab || Boolean(t.pinned);
+      close.hidden = Boolean(t.pinned);
+      if (t.pinned) { const pin = document.createElement('span'); pin.className = 'tab-pin'; pin.setAttribute('aria-label', 'Pinned'); pin.textContent = '◆'; wrap.append(pin); }
       close.onclick = e => { e.stopPropagation(); this.closeTab(g, idx); };
 
+      wrap.addEventListener('contextmenu', e => this.openTabMenu(g, t, e));
       wrap.addEventListener('dragstart', e => {
         this.drag = { group: g, tab: t };
         e.dataTransfer.setData(DND_MIME, t.path);
@@ -405,7 +489,7 @@ export class EditorGroups {
     );
 
     if (currentTab && this.hooks.hasFile(currentTab.path)) {
-      const content = this.hooks.getFile(currentTab.path);
+      const content = this.hooks.getFileText?.(currentTab.path) ?? this.hooks.getFile(currentTab.path);
       if (g.editor.getFilename() !== currentTab.path) {
         g.editor.open(currentTab.path, content, currentTab.view);
       } else {
@@ -431,6 +515,7 @@ export class EditorGroups {
         if (!t) return;
         if (!next.tabs.some(x => x.path === t.path)) next.tabs.push(t);
         next.index = next.tabs.findIndex(x => x.path === t.path);
+        this.orderPinned(next);
         g.tabs = g.tabs.filter(x => x !== t);
         if (!g.tabs.length) this.remove(g);
         this.activate(next, next.index, true);
@@ -438,6 +523,7 @@ export class EditorGroups {
       }]);
       actions.push(['Join group into next', () => {
         for (const t of g.tabs) if (!next.tabs.some(x => x.path === t.path)) next.tabs.push(t);
+        this.orderPinned(next);
         this.remove(g);
         this.activate(next, next.index, true);
         this.persist();
@@ -518,7 +604,7 @@ export class EditorGroups {
 
   serialize() {
     const walk = node => node.group
-      ? { tabs: node.group.tabs.map(t => ({ path: t.path, view: t.view || null })), index: node.group.index, active: node.group === this.active }
+      ? { tabs: node.group.tabs.map(t => ({ path: t.path, view: t.view || null, pinned: Boolean(t.pinned) })), index: node.group.index, active: node.group === this.active }
       : { axis: node.axis, ratio: node.ratio, first: walk(node.first), second: walk(node.second) };
     return walk(this.tree);
   }
@@ -549,8 +635,9 @@ export class EditorGroups {
         g.tabs = node.tabs
           .filter(t => t && typeof t.path === 'string' && this.hooks.hasFile(t.path))
           .slice(0, 50)
-          .map(t => ({ path: t.path, view: t.view || null }));
+          .map(t => ({ path: t.path, view: t.view || null, pinned: Boolean(t.pinned) }));
         g.index = Number.isInteger(node.index) ? Math.max(0, Math.min(node.index, g.tabs.length - 1)) : 0;
+        this.orderPinned(g);
         if (node.active) this.active = g;
         return { group: g };
       }

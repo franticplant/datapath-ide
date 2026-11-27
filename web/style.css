@@ -1394,3 +1394,58 @@ body.is-zen .featured-hero, body.is-zen .tour-rail { display: none !important; }
   .schem-resource-table { font-size: 10px; }
   .schem-resource-table th, .schem-resource-table td { padding: 3px 2px; }
 }
+
+/* Editor craft, tab actions and workspace replacement. */
+.cm-word-occ { background: color-mix(in srgb, var(--primary) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 30%, transparent); border-radius: 2px; }
+.cm-indent-guide { border-left: 1px solid color-mix(in srgb, var(--muted) 28%, transparent); box-sizing: border-box; }
+.cm-hover-card { max-width: min(360px, 85vw); max-height: 40vh; overflow: auto; padding: 8px 10px; color: var(--text); background: var(--raised); border: 1px solid var(--hair); border-radius: 7px; font-size: 12px; }
+.cm-editor.is-module-drop { outline: 2px dashed var(--primary); outline-offset: -3px; background: color-mix(in srgb, var(--primary) 8%, var(--surface)); }
+.group-tab.is-pinned { color: var(--primary); }
+.tab-pin { font-size: 9px; margin-left: 6px; color: var(--primary); }
+.tab-context-menu { position: fixed; z-index: 1000; min-width: 160px; max-width: calc(100vw - 8px); padding: 4px; background: var(--raised); border: 1px solid var(--hair); border-radius: 8px; box-shadow: 0 8px 24px #0006; }
+.tab-context-menu button { display: block; width: 100%; padding: 6px 10px; text-align: left; color: var(--text); border-radius: 5px; font-size: 12px; }
+.tab-context-menu button:hover:not(:disabled), .tab-context-menu button:focus-visible { background: var(--hover); }
+.tab-context-menu button:disabled { opacity: .45; }
+.search-options { flex-wrap: wrap; gap: 6px 12px; }
+.search-replace-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.search-replace-row input { flex: 1 1 160px; min-width: 0; max-width: 100%; padding: 6px 8px; color: var(--text); background: var(--chip); border: 1px solid var(--hair); border-radius: var(--radius); }
+.search-count.is-error { color: var(--error); overflow-wrap: anywhere; }
+
+/* Tactile waveform, schematic and board interactions. */
+.wave-zoom-box { position: absolute; top: 0; bottom: 0; z-index: 4; min-width: 1px; pointer-events: none; background: color-mix(in srgb, var(--primary) 25%, transparent); border: 1px solid var(--primary); color: var(--text); font: 10px var(--mono); white-space: nowrap; }
+#waveform.is-plot-drop { outline: 2px dashed var(--primary); outline-offset: -3px; background: color-mix(in srgb, var(--primary) 8%, var(--panel)); }
+.wave-row.is-drop-above { box-shadow: inset 0 3px var(--primary); }
+.wave-row.is-drop-below { box-shadow: inset 0 -3px var(--primary); }
+.schem-inspector header { cursor: grab; touch-action: none; user-select: none; }
+.schem-inspector.is-dragging header, .schem-cell.is-dragging { cursor: grabbing; }
+.schem-cell.is-dragging .schem-shape { stroke: var(--primary); stroke-width: 2.5; }
+.schem-cell { touch-action: none; }
+.si-pins tr[draggable="true"] { cursor: grab; }
+#schem-reset-layout:not(:disabled) { color: var(--primary); }
+.board-widget > header[draggable="true"], .board-input-name[draggable="true"] { cursor: grab; }
+.board-widget.is-dragging, .board-input.is-dragging { opacity: .45; }
+.board-widget.is-drop-before, .board-input.is-drop-before { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* Compact editor navigation, quick open and tactile actions. */
+.editor-column { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+#editor-breadcrumbs { display: flex; align-items: center; gap: 4px; height: 22px; flex: none; min-width: 0; padding: 0 8px; overflow-x: auto; color: var(--muted); background: var(--surface); font: 11px var(--mono); }
+#editor-breadcrumbs button { color: inherit; white-space: nowrap; padding: 2px 3px; border-radius: 4px; }
+#editor-breadcrumbs button:hover { color: var(--text); background: var(--hover); }
+body.dock-maximized .editor-column, .mode-wave .editor-column { display: none; }
+@media (max-width: 900px) { body[data-view="console"] .editor-column, body[data-view="waveform"] .editor-column { display: none; } }
+#quick-open-dialog { width: min(680px, 94vw); }
+#quick-open-input { width: 100%; border: 0; border-bottom: 1px solid var(--hair); border-radius: 0; }
+.quick-open-item { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 7px 10px; color: var(--text); text-align: left; }
+.quick-open-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-open-item small { margin-left: auto; flex: none; color: var(--muted); font-size: 11px; }
+.quick-open-item.selected, .quick-open-item:hover { background: var(--sel); }
+.problem-row { display: flex; align-items: center; gap: 4px; }
+.problem-row .problem-item { flex: 1; min-width: 0; }
+.problem-fix { flex: none; margin-right: 5px; }
+.hierarchy-row { display: flex; align-items: center; min-width: 0; }
+.hierarchy-row .hierarchy-item { flex: 1; min-width: 0; }
+.hierarchy-add { flex: none; padding: 2px 7px; color: var(--primary); border-radius: 5px; }
+.hierarchy-add:hover { background: var(--hover); }
+.panel-tabs .is-dragging { opacity: .5; }
+.panel-tabs .is-drop-target, #toggle-dock-side.is-drop-target { outline: 2px solid var(--primary); outline-offset: -2px; }
+.signal-inspector-row[draggable="true"] { cursor: grab; }

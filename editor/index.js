@@ -1,11 +1,11 @@
 import { basicSetup } from 'codemirror';
 import { EditorState, Compartment, Prec, StateEffect, StateField } from '@codemirror/state';
-import { EditorView, keymap, Decoration, WidgetType } from '@codemirror/view';
+import { EditorView, keymap, Decoration, WidgetType, ViewPlugin, hoverTooltip } from '@codemirror/view';
 import { StreamLanguage, indentUnit, syntaxHighlighting, HighlightStyle, bracketMatching, foldService } from '@codemirror/language';
 import { indentWithTab, toggleComment, undo as cmUndo, redo as cmRedo, indentMore, indentLess, cursorCharLeft, cursorCharRight, cursorLineUp, cursorLineDown, cursorLineBoundaryBackward, cursorLineEnd, cursorGroupForward, cursorGroupBackward, cursorDocStart, cursorDocEnd } from '@codemirror/commands';
 import { autocompletion, completionKeymap, startCompletion, closeCompletion, acceptCompletion, completionStatus, snippetCompletion } from '@codemirror/autocomplete';
 import { setDiagnostics, lintGutter } from '@codemirror/lint';
-import { gotoLine, openSearchPanel, closeSearchPanel, searchPanelOpen } from '@codemirror/search';
+import { gotoLine, openSearchPanel, closeSearchPanel, searchPanelOpen, selectSelectionMatches } from '@codemirror/search';
 import { tags } from '@lezer/highlight';
 
 export function editorText(parent) {
@@ -173,6 +173,56 @@ function wordAround(doc, pos, allowLiteral = false) {
   return text.slice(start, end);
 }
 
+// Decorations are restricted to visible ranges, so scrolling and large documents stay responsive.
+const wordOccurrence = ViewPlugin.fromClass(class {
+  constructor(view) { this.decorations = this.build(view); }
+  update(update) { if (update.docChanged || update.selectionSet || update.viewportChanged) this.decorations = this.build(update.view); }
+  build(view) {
+    const { doc, selection } = view.state;
+    if (doc.length > 100000 || !selection.main.empty) return Decoration.none;
+    const pos = selection.main.head, line = doc.lineAt(pos), offset = pos - line.from;
+    let start = offset, end = offset;
+    while (start > 0 && /[\w$]/.test(line.text[start - 1])) start--;
+    while (end < line.length && /[\w$]/.test(line.text[end])) end++;
+    const word = line.text.slice(start, end);
+    if (word.length < 2 || /^\d/.test(word) || KEYWORDS.has(word) || CONTROL.has(word) || TYPES.has(word) || SIM.has(word)) return Decoration.none;
+    const marks = [];
+    for (const range of view.visibleRanges) {
+      const text = doc.sliceString(range.from, range.to);
+      let at = 0;
+      while ((at = text.indexOf(word, at)) >= 0) {
+        const from = range.from + at, to = from + word.length;
+        const before = from > 0 ? doc.sliceString(from - 1, from) : '';
+        const after = to < doc.length ? doc.sliceString(to, to + 1) : '';
+        if ((!before || !/[\w$]/.test(before)) && (!after || !/[\w$]/.test(after))) marks.push(Decoration.mark({ class: 'cm-word-occ' }).range(from, to));
+        at += word.length;
+      }
+    }
+    return Decoration.set(marks, true);
+  }
+}, { decorations: value => value.decorations });
+
+const indentGuides = ViewPlugin.fromClass(class {
+  constructor(view) { this.decorations = this.build(view); }
+  update(update) { if (update.docChanged || update.viewportChanged || update.transactions.some(tr => tr.reconfigured)) this.decorations = this.build(update.view); }
+  build(view) {
+    const marks = [], seen = new Set(), width = Math.max(1, view.state.facet(EditorState.tabSize));
+    for (const range of view.visibleRanges) {
+      let line = view.state.doc.lineAt(range.from);
+      while (line.from <= range.to) {
+        if (!seen.has(line.from)) {
+          seen.add(line.from);
+          const indent = /^ */.exec(line.text)[0].length;
+          for (let column = width; column <= indent; column += width) marks.push(Decoration.mark({ class: 'cm-indent-guide' }).range(line.from + column - 1, line.from + column));
+        }
+        if (line.number === view.state.doc.lines) break;
+        line = view.state.doc.line(line.number + 1);
+      }
+    }
+    return Decoration.set(marks, true);
+  }
+}, { decorations: value => value.decorations });
+
 const emacsKeymap = Prec.high(keymap.of([
   { key: 'Ctrl-f', run: cursorCharRight },
   { key: 'Ctrl-b', run: cursorCharLeft },
@@ -300,6 +350,18 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
       if (token) opts.onInspectToken(token, line, { x: event.clientX, y: event.clientY }, filename);
       return true;
     },
+    dragover(event) {
+      if (!opts.onDropModule || !Array.from(event.dataTransfer?.types || []).includes('application/x-datapath-module')) return false;
+      event.preventDefault(); view.dom.classList.add('is-module-drop'); event.dataTransfer.dropEffect = 'copy'; return true;
+    },
+    dragleave(event) { if (!view.dom.contains(event.relatedTarget)) view.dom.classList.remove('is-module-drop'); return false; },
+    drop(event) {
+      if (!opts.onDropModule || !Array.from(event.dataTransfer?.types || []).includes('application/x-datapath-module')) return false;
+      event.preventDefault(); event.stopPropagation(); view.dom.classList.remove('is-module-drop');
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos != null) opts.onDropModule(event.dataTransfer.getData('application/x-datapath-module'), pos);
+      return true;
+    },
     focus() { opts.onFocus?.(); return false; },
     blur() { opts.onBlur?.(); return false; },
   });
@@ -307,6 +369,10 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
   const baseKeymap = Prec.high(keymap.of([
     { key: 'Shift-Alt-f', run: () => { opts.onFormat?.(); return true; } },
     { key: 'Mod-Space', run: startCompletion },
+    { key: 'Mod-Shift-l', run: selectSelectionMatches },
+    { key: 'Mod-.', run: () => { opts.onQuickFix?.(); return true; } },
+    { key: 'F8', run: () => { opts.onNextProblem?.(1); return true; } },
+    { key: 'Shift-F8', run: () => { opts.onNextProblem?.(-1); return true; } },
     { key: 'Tab', run: view => completionStatus(view.state) === 'active' ? acceptCompletion(view) : false },
     indentWithTab,
     { key: 'Mod-/', run: toggleComment },
@@ -323,6 +389,24 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
 
   const extensions = [
     baseKeymap,
+    EditorState.allowMultipleSelections.of(true),
+    EditorView.clickAddsSelectionRange.of(event => event.altKey),
+    wordOccurrence,
+    indentGuides,
+    hoverTooltip((editorView, pos) => {
+      if (!opts.onHover) return null;
+      const line = editorView.state.doc.lineAt(pos), offset = pos - line.from;
+      let start = offset, end = offset;
+      while (start > 0 && /[\w$]/.test(line.text[start - 1])) start--;
+      while (end < line.length && /[\w$]/.test(line.text[end])) end++;
+      if (start === end) return null;
+      const result = opts.onHover(line.text.slice(start, end), line.number, pos, editorView, line.text);
+      if (!result) return null;
+      const dom = result instanceof HTMLElement ? result : result.dom;
+      if (!(dom instanceof HTMLElement)) return null;
+      dom.classList.add('cm-hover-card');
+      return { pos: result.pos ?? line.from + start, end: result.end ?? line.from + end, above: true, create: () => ({ dom }) };
+    }),
     keymap.of(completionKeymap),
     emacsComp.of([]),
     basicSetup,
@@ -334,7 +418,7 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
     lineMarks,
     inlineField,
     wrapComp.of([]),
-    indentComp.of(indentUnit.of('  ')),
+    indentComp.of([indentUnit.of('  '), EditorState.tabSize.of(2)]),
     fontComp.of(EditorView.theme({ '&': { fontSize: '14px' } })),
     EditorView.contentAttributes.of({ 'aria-label': 'Source editor', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', autocorrect: 'off' }),
     inspectHandler,
@@ -348,7 +432,7 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
     view.dispatch({
       effects: [
         wrapComp.reconfigure(preferences.wrap ? EditorView.lineWrapping : []),
-        indentComp.reconfigure(indentUnit.of(' '.repeat(preferences.tabWidth || 2))),
+        indentComp.reconfigure([indentUnit.of(' '.repeat(preferences.tabWidth || 2)), EditorState.tabSize.of(preferences.tabWidth || 2)]),
         fontComp.reconfigure(EditorView.theme({ '&': { fontSize: `${preferences.fontSize || 14}px` } })),
         emacsComp.reconfigure(preferences.emacs ? emacsKeymap : []),
       ],
@@ -441,9 +525,12 @@ export function createEditor(parent, onChange, onPosition, opts = {}) {
     focus() { view.focus(); },
     blur() { view.contentDOM.blur(); },
     destroy() { view.destroy(); },
-    insertText(text) {
+    getCursorPos() { const pos = view.state.selection.main.head; const line = view.state.doc.lineAt(pos); return { pos, line: line.number, col: pos - line.from + 1 }; },
+    insertText(text, pos = null) {
       const sel = view.state.selection.main;
-      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text }, selection: { anchor: sel.from + text.length }, scrollIntoView: true });
+      const from = pos == null ? sel.from : Math.max(0, Math.min(view.state.doc.length, pos));
+      const to = pos == null ? sel.to : from;
+      view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length }, scrollIntoView: true });
       view.focus();
     },
     moveCursor(dir) {
