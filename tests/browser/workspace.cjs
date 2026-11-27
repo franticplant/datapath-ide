@@ -1447,22 +1447,29 @@ const webRoot = join(__dirname, '../../web');
     const fitted = await viewBox();
     assert.deepEqual(fitted.map(Math.round), pinchBefore.map(Math.round), `double-click on the background fits: ${fitted} vs ${pinchBefore}`);
 
+    const flushSchem = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0))));
+    const stepSchem = async dir => {
+      await page.locator(dir > 0 ? '#schem-step-next' : '#schem-step-prev').click();
+      await flushSchem();
+    };
+
     // Learning bar: decoded instruction + what changed this cycle; a change pill opens the State tab.
     assert.equal(await page.locator('#schem-learn-bar').isVisible(), true);
-    while ((await page.locator('#schem-time').textContent()) !== '5 ns') await page.locator('#schem-step-prev').click();
+    await flushSchem();
+    while ((await page.locator('#schem-time').textContent()) !== '5 ns') await stepSchem(-1);
     const instrSeen = [], changeSeen = [];
     for (let i = 0; i < 17; i++) {
       instrSeen.push(await page.locator('#schem-learn-instr').textContent());
       changeSeen.push(...await page.locator('#schem-learn-bar .learn-change').allTextContents());
-      await page.locator('#schem-step-next').click();
+      await stepSchem(1);
     }
     assert.equal(instrSeen[0], 'PC 0x00000000 · addi $t0, $zero, 1', instrSeen.join(' | '));
     assert.ok(instrSeen.some(text => /^PC 0x00000008 · add \$t2, \$t0, \$t1$/.test(text)), instrSeen.join(' | '));
     assert.ok(instrSeen.some(text => /^PC 0x000000[0-9a-f]{2} · sw \$t\d, \d+\(\$zero\)$/.test(text)), instrSeen.join(' | '));
     assert.ok(changeSeen.includes('$t0 ← 0x00000001') && changeSeen.includes('$t5 ← 0x00000008'), changeSeen.join(' | '));
     assert.ok(changeSeen.some(text => /^dmem\[\d\] ← 0x0000000[1-8]$/.test(text)), changeSeen.join(' | '));
-    await page.locator('#schem-step-prev').click();
-    while (!(await page.locator('#schem-learn-bar button.learn-change').count())) await page.locator('#schem-step-prev').click();
+    await stepSchem(-1);
+    while (!(await page.locator('#schem-learn-bar button.learn-change').count())) await stepSchem(-1);
     const pillPath = await page.locator('#schem-learn-bar button.learn-change').first().getAttribute('data-path');
     await page.locator('#schem-learn-bar button.learn-change').first().click();
     assert.equal(await page.locator('#hw-state').isVisible(), true);
@@ -1523,7 +1530,7 @@ const webRoot = join(__dirname, '../../web');
     await page.waitForSelector('#schem-learn-bar:not([hidden])');
     const fsmChanges = [];
     for (let i = 0; i < 8; i++) {
-      await page.locator('#schem-step-next').click();
+      await stepSchem(1);
       fsmChanges.push(...await page.locator('#schem-learn-bar .learn-change.kind-state').allTextContents());
     }
     assert.ok(fsmChanges.includes('state: FETCH → DECODE') && fsmChanges.includes('state: DECODE → EXEC'), fsmChanges.join(' | '));
