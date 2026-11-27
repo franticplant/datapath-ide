@@ -17,6 +17,7 @@
 - **State tab**: register files and memories captured from every run, with recent-write heat, MIPS ABI names, inline disassembly and a PC marker.
 - **FPGA board**: replay LEDs and 7-segment displays from a trace, or drive any module live (**Live DUT**) with switches, hex inputs and a clock button.
 - **Tests**: run every testbench in the workspace as a suite with PASS/FAIL counts and one-click waveform/log inspection.
+- **Featured Showcase & 6-chapter Interactive Tour**: walk from `Boot` (MIPS32 CPU) → `X-Ray` (live RTL schematic) → `Debug` (latch warning) → `Time` (symbolic FSM waveforms) → `Touch` (Live DUT FPGA board) → `Verify` (4-TB test suite) without blocking the IDE, or deep-link straight into any stage with `?tour=1` or `?showcase=…`.
 - **5 built-in Showcase Projects**: single-cycle MIPS CPU, FPGA board lab, multi-cycle control FSM, 32-bit ALU with a test suite, and a latch bug hunter.
 - **Editor**: CodeMirror 6 with split panes, Verilog/MIPS completion, a reference card, F12 go-to-definition and workspace search; **9 AMOLED/tonal themes** with semantic coloring (structural vs. behavioral vs. simulation-only Verilog, real vs. pseudo MIPS instructions).
 - **Mobile and touch**: phone layout with a Verilog key row, bottom sheet, pinch-zoom, and **Back navigation** (Android back, ‹ button, Alt+←/→) through dialogs, jumps to code and schematic levels.
@@ -24,7 +25,7 @@
 
 ## Quick start
 
-Open the [live demo](https://franticplant.github.io/datapath-ide/), choose **Projects → MIPS32 Single-Cycle CPU** and press **Run**.
+Open the [live demo](https://franticplant.github.io/datapath-ide/) and press **Start Interactive Tour** (or jump straight in with [`?tour=1`](https://franticplant.github.io/datapath-ide/?tour=1)), or open **Showcase** for any of the 5 built-in labs.
 
 To run it locally, serve the `web/` directory over HTTP (any static server works; there is no build step):
 
@@ -56,17 +57,17 @@ Everything runs from the checked-in `web/` directory; `make help` lists the task
 | --- | --- |
 | Serve locally | `make serve` |
 | All checks (what CI runs) | `make test` |
-| Unit tests (assembler, decoder, FSM, themes, showcase, history) | `make test-unit` |
+| Unit tests (assembler, decoder, FSM, themes, showcase, history, tour) | `make test-unit` |
 | Icarus WASM smoke test | `make test-smoke` |
 | Playwright end-to-end suite | `make test-browser` |
 | Rebuild `web/vendor` from `package-lock.json` | `make bundle` |
 | Prove `web/vendor` is reproducible | `make check-bundle` |
 
-When [`mvm`](#reproducible-tooling) is on `PATH`, the Makefile runs Node, Playwright and Python in throwaway microVMs (offline, project mounted read-only); `USE_MVM=0` uses a local Node 22 / Python 3 instead, which is what CI does. Install dependencies with `mvm fetch` (or `npm ci --ignore-scripts`) before `make bundle`.
+When [`mvm`](https://github.com/franticplant/mvm) is on `PATH`, the Makefile runs Node, Playwright and Python in throwaway microVMs (offline, project mounted read-only); `USE_MVM=0` uses a local Node 22 / Python 3 instead, which is what CI does. Install dependencies with `mvm fetch` (or `npm ci --ignore-scripts`) before `make bundle`.
 
 ### Reproducible tooling
 
-The project follows the same discipline as its sibling repositories: dev tooling runs in disposable `mvm` microVMs with network only for dependency fetches, CI actions are pinned to full commit SHAs, and vendored bundles must be byte-identical to a fresh build from the lockfile.
+Local builds, bundling, and Playwright runs are sandboxed with [**mvm**](https://github.com/franticplant/mvm) — ephemeral KVM microVMs with offline builds, read-only project mounts, hidden secrets, and manifest-only fetches. CI actions are pinned to full commit SHAs, and vendored bundles must reproduce byte-for-byte from `package-lock.json`.
 
 ### Engine
 
@@ -95,7 +96,7 @@ gh attestation verify datapath-ide-static-vX.Y.Z.tar.gz --repo franticplant/data
 
 ## Security
 
-Everything runs client-side; there is no backend. See [SECURITY.md](SECURITY.md) for the security model and how to report a vulnerability privately.
+Everything runs client-side with no backend; local builds and agent-assisted development are isolated in disposable KVM microVMs via [**mvm**](https://github.com/franticplant/mvm). See [SECURITY.md](SECURITY.md) for the security model and how to report a vulnerability privately.
 
 ## Contributing
 

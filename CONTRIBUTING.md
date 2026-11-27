@@ -20,7 +20,7 @@ Thanks for helping improve Datapath Studio. Small, focused pull requests are eas
 
 ## Development setup
 
-See the README's *Development* section. On machines with `mvm` installed the Makefile runs Node and Playwright inside throwaway KVM microVMs automatically; set `USE_MVM=0` to use a local Node 22 and Playwright instead (CI does this).
+See the README's *Development* section. On machines with [`mvm`](https://github.com/franticplant/mvm) installed the Makefile runs Node and Playwright inside throwaway KVM microVMs automatically; set `USE_MVM=0` to use a local Node 22 and Playwright instead (CI does this).
 
 ## Licensing
 
