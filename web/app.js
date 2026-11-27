@@ -414,6 +414,7 @@ document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openPalette(); return; }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openWorkspaceSearch(); return; }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); layout.toggleDockPosition(); return; }
   if ((mod || e.altKey) && e.shiftKey && e.key.toLowerCase() === 'a') { e.preventDefault(); assembleCommand(); return; }
   if (e.key === 'F12' && !mod && !e.altKey) { e.preventDefault(); goToDefinition(); return; }
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); chordK = Date.now(); return; }
@@ -427,6 +428,7 @@ document.addEventListener('keydown', e => {
   else if (e.altKey && !mod && e.key === '2') { e.preventDefault(); layout.setMode('run'); }
   else if (e.altKey && !mod && e.key === '3') { e.preventDefault(); layout.setMode('wave'); }
   else if (e.key === 'Escape' && layout.getState().zen && !document.querySelector('dialog[open]')) { e.preventDefault(); layout.exitZen(); }
+  else if (e.key === 'Escape' && layout.isMaximized() && !document.querySelector('dialog[open]')) { e.preventDefault(); layout.setMaximized(false); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); storage.flush(); showToast('Saved locally'); }
   else if (mod && e.key === 'Enter' && !$('run').disabled) { e.preventDefault(); execute('run'); }
   else if (mod && e.key.toLowerCase() === 'b' && !$('compile').disabled) { e.preventDefault(); execute('compile'); }
@@ -1457,6 +1459,7 @@ function buildCommands() {
     { label: 'Editor: Next Group', hint: '', run: () => groups.nextGroup() },
     { label: s.explorerHidden ? 'Show Explorer' : 'Hide Explorer', hint: '', run: () => layout.update({ mode: 'custom', explorerHidden: !s.explorerHidden }) },
     { label: s.dockHidden ? 'Show Output Panel' : 'Hide Output Panel', hint: 'Ctrl+J', run: () => layout.toggleDock() },
+    { label: s.dockPosition === 'right' ? 'Dock Output: Bottom' : 'Dock Output: Right (Side-by-Side)', hint: 'Ctrl+Shift+D', run: () => layout.toggleDockPosition() },
     { label: s.inspectorHidden ? 'Show Inspector' : 'Hide Inspector', hint: '', run: () => layout.update({ mode: 'custom', inspectorHidden: !s.inspectorHidden }) },
     { label: 'Maximize / Restore Output', hint: '', run: () => $('maximize-dock').click() },
     { label: 'Verilog Reference Card', hint: '', run: () => openHelp('') },
@@ -1685,6 +1688,7 @@ schematic = installSchematic({
   overlay: { opened: close => nav?.overlayOpened(close), closed: close => nav?.overlayClosed(close) },
   getStateName: (path, bits) => (fsmMap ? stateNameFor(fsmMap, path, bits) : null),
   onShowArray: path => { showPanel('hw-state'); hwState.select(path); },
+  onProgress: phase => tour?.setBusyText(phase),
 });
 
 // ---------------------------------------------------------------- Back / Forward history
@@ -1742,6 +1746,10 @@ function waitUntil(check, timeout = 25000) {
 tour = installTour({
   $,
   loadShowcase: (id, opts) => loadShowcaseProject(id, opts),
+  openFile: path => openFile(path),
+  setDockPosition: (pos, opts) => { if (!isNarrow()) layout.setDockPosition(pos, opts); },
+  setInspectorHidden: hidden => { if (!isNarrow()) layout.update({ mode: 'custom', inspectorHidden: hidden }); },
+  warmSchematic: () => schematic.warm(),
   runSimulation: async ({ suppressAutoWave = true } = {}) => {
     await waitEngineReady();
     const done = new Promise(resolve => simRunWaiters.push(resolve));

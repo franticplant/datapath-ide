@@ -4,17 +4,34 @@
 // Everything loads from local URLs (./engine/, ./vendor/schematic/).
 
 let elk = null;            // ELK instance
+let elkPromise = null;     // in-flight loader so warm() + elaborate() share one load
 let cache = null;          // { yosysJson, topModule }
+let cachedKey = null;
+let cachedReply = null;
 
-async function loadElk() {
-  if (!elk) {
-    const { default: ELK } = await import('./vendor/schematic/elk.js');
-    elk = new ELK();
-    // elkjs detects that it runs inside a Worker and installs self.onmessage for its own
-    // worker protocol; requests are handled by the listener below instead.
-    if (typeof WorkerGlobalScope !== 'undefined') self.onmessage = null;
+function loadElk() {
+  if (elk) return Promise.resolve(elk);
+  if (!elkPromise) {
+    elkPromise = import('./vendor/schematic/elk.js').then(({ default: ELK }) => {
+      elk = new ELK();
+      // elkjs detects that it runs inside a Worker and installs self.onmessage for its own
+      // worker protocol; requests are handled by the listener below instead.
+      if (typeof WorkerGlobalScope !== 'undefined') self.onmessage = null;
+      return elk;
+    });
   }
-  return elk;
+  return elkPromise;
+}
+
+function cacheKeyFor(data) {
+  return JSON.stringify({
+    topModule: data.topModule,
+    standard: data.standard,
+    flatten: Boolean(data.flatten),
+    defines: data.defines || [],
+    includeDirs: data.includeDirs || [],
+    sources: (data.sourceFiles || []).map(path => [path, data.files?.[path] ?? '']),
+  });
 }
 
 // ---------------------------------------------------------------- Icarus run
@@ -366,18 +383,36 @@ if (typeof WorkerGlobalScope !== 'undefined') self.addEventListener('message', a
   const { requestId } = data;
   const started = performance.now();
   try {
-    if (data.type === 'elaborate') {
+    if (data.type === 'warm') {
+      await Promise.all([loadElk(), import('./engine/ivlpp.js'), import('./engine/ivl.js')]);
+      self.postMessage({ type: 'warmed', requestId });
+    } else if (data.type === 'elaborate') {
       if (!/^[A-Za-z_][\w$]*$/.test(data.topModule || '')) throw new Error('Choose a top module to elaborate.');
+      const key = cacheKeyFor(data);
+      if (cachedReply && cachedKey === key) {
+        self.postMessage({ ...cachedReply, requestId, elapsedMs: 0 });
+        return;
+      }
+      const elkLoad = loadElk();
+      self.postMessage({ type: 'progress', requestId, phase: 'Synthesizing RTL…' });
       const result = await runIvlElaboration(data);
       if (!result.ok) {
         cache = null;
+        cachedKey = null;
+        cachedReply = null;
         self.postMessage({ type: 'elaborate-failed', requestId, diagnostics: result.diagnostics, log: result.log, elapsedMs: Math.round(performance.now() - started) });
         return;
       }
+      if (!elk) self.postMessage({ type: 'progress', requestId, phase: 'Loading layout engine…' });
+      await elkLoad;
+      self.postMessage({ type: 'progress', requestId, phase: 'Laying out schematic…' });
       const design = data.flatten ? flattenModule(result.yosysJson, data.topModule) : result.yosysJson;
       cache = { yosysJson: design, topModule: data.topModule };
       const graph = await layoutGraph(moduleGraph(design, data.topModule));
-      self.postMessage({ type: 'elaborated', requestId, topModule: data.topModule, modules: moduleList(design), yosysJson: design, graph, diagnostics: result.diagnostics, elapsedMs: Math.round(performance.now() - started) });
+      const reply = { type: 'elaborated', topModule: data.topModule, modules: moduleList(design), yosysJson: design, graph, diagnostics: result.diagnostics };
+      cachedKey = key;
+      cachedReply = reply;
+      self.postMessage({ ...reply, requestId, elapsedMs: Math.round(performance.now() - started) });
     } else if (data.type === 'layout') {
       if (!cache) throw new Error('Elaborate the design first.');
       const graph = await layoutGraph(moduleGraph(cache.yosysJson, data.moduleName));

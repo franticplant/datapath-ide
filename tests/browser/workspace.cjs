@@ -1566,23 +1566,44 @@ const webRoot = join(__dirname, '../../web');
     await page.setViewportSize({ width: 1440, height: 900 });
 
     const waitTourSettled = () => page.waitForFunction(() => !document.getElementById('tour-rail').hidden && document.getElementById('tour-busy').hidden && !document.getElementById('tour-assist').disabled, null, { timeout: 60000 });
+    // IDE viewing dimensions: Right/Bottom dock toggle, double-click splitter snap, true full-stage maximize + Esc restore.
+    await page.locator('#toggle-dock-side').click();
+    assert.equal(await page.evaluate(() => document.body.classList.contains('dock-right')), true);
+    const widthBeforeSnap = (await page.locator('.bottom').boundingBox()).width;
+    await page.locator('#dock-splitter').dispatchEvent('dblclick');
+    assert.notEqual(Math.round((await page.locator('.bottom').boundingBox()).width), Math.round(widthBeforeSnap));
+    await page.locator('#maximize-dock').click();
+    assert.equal(await page.locator('.editor-groups').isVisible(), false, 'Maximize expands output to the full workspace');
+    const splitBox = await page.locator('.workspace-split').boundingBox();
+    const maxBox = await page.locator('.bottom').boundingBox();
+    assert.ok(Math.abs(maxBox.height - splitBox.height) < 2 && Math.abs(maxBox.width - splitBox.width) < 2, `Maximized dock fills split stage: ${JSON.stringify({ maxBox, splitBox })}`);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.editor-groups').isVisible(), true, 'Escape restores split view');
+    await page.locator('#toggle-dock-side').click();
+    assert.equal(await page.evaluate(() => document.body.classList.contains('dock-right')), false);
+
     await page.locator('#tour-start').click();
     await page.waitForFunction(() => document.getElementById('featured-hero').hidden);
     await waitText('#tour-counter', '1/6');
     await waitTourSettled();
 
-    // Ch 1 (Boot): MIPS RegFile visible, assist switches to IMEM PC disasm & marks step done.
+    // Ch 1 (Boot): Verilog CPU (mips_cpu.v) opens first in Right Dock; assist peeks program.asm & IMEM.
+    await waitText('#active-file', 'Active: mips_cpu.v');
+    assert.equal(await page.evaluate(() => document.body.classList.contains('dock-right')), true, 'Tour uses Right Dock for side-by-side hardware panels');
     await page.waitForSelector('#hw-arrays [data-array="mips_cpu_tb.dut.u_rf.regs"]');
     await page.locator('#tour-assist').click();
+    await waitText('#active-file', 'Active: program.asm');
     await page.waitForFunction(() => document.querySelector('#hw-arrays [data-array="mips_cpu_tb.dut.u_imem.mem"]')?.getAttribute('aria-pressed') === 'true');
     assert.equal(await page.locator('#hw-disasm').getAttribute('aria-pressed'), 'true');
     assert.equal(await page.locator('[data-tour-step="0"].is-done').count(), 1);
 
-    // Ch 2 (X-Ray): Schematic elaborated with u_alu; assist inspects u_alu & IDE zoom stays interactive.
+    // Ch 2 (X-Ray): Right Dock schematic has generous viewing height (>= 350 px); assist inspects u_alu & zoom stays live.
     await page.locator('#tour-next').click();
     await waitText('#tour-counter', '2/6');
     await waitTourSettled();
+    await waitText('#active-file', 'Active: mips_cpu.v');
     await page.waitForSelector('#schem-canvas .schem-cell.kind-module[data-name="u_alu"]');
+    assert.ok((await page.locator('#schem-canvas').boundingBox()).height >= 350, 'Side-by-side schematic has full height instead of a cramped slit');
     await page.locator('#tour-assist').click();
     await page.waitForSelector('#schem-inspector:not([hidden])');
     const vbBefore = await page.locator('#schem-canvas').getAttribute('viewBox');
@@ -1597,23 +1618,25 @@ const webRoot = join(__dirname, '../../web');
     await page.locator('#tour-assist').click();
     await waitText('#active-file', 'Active: datapath_slice.v');
 
-    // Ch 4 (Time): fsm-control symbolic waveform + assist step.
+    // Ch 4 (Time): smoothly switches back to full-width Bottom Dock for fsm-control waveform.
     await page.locator('#tour-next').click();
     await waitText('#tour-counter', '4/6');
     await waitTourSettled();
+    assert.equal(await page.evaluate(() => document.body.classList.contains('dock-right')), false, 'Waveforms use full-width Bottom Dock');
     await page.waitForSelector('.wave-row[data-path="fsm_tb.dut.state"]');
     assert.match(await page.locator('.wave-row[data-path="fsm_tb.dut.state"] strong').textContent(), /^(?:FETCH|DECODE|EXEC|MEM|WRITEBACK)$/);
     await page.locator('#tour-assist').click();
 
-    // Ch 5 (Touch): fpga-board Live DUT; assist flips switches & ticks clock.
+    // Ch 5 (Touch): switches to Right Dock for full-height fpga-board Live DUT; assist flips switches & ticks clock.
     await page.locator('#tour-next').click();
     await waitText('#tour-counter', '5/6');
     await waitTourSettled();
+    assert.equal(await page.evaluate(() => document.body.classList.contains('dock-right')), true);
     await page.waitForFunction(() => !document.getElementById('board-tick').disabled, null, { timeout: 30000 });
     await page.locator('#tour-assist').click();
     await waitText('#board-live-outputs [data-port="leds"] .board-readout', '0x01', 15000);
 
-    // Ch 6 (Verify): alu-suite runs all 4 tests; mobile layout clean; assist resets to clean workspace.
+    // Ch 6 (Verify): alu-suite runs all 4 tests; mobile layout clean; assist resets to clean workspace & bottom dock.
     await page.locator('#tour-next').click();
     await waitText('#tour-counter', '6/6');
     await waitTourSettled();
@@ -1624,6 +1647,7 @@ const webRoot = join(__dirname, '../../web');
     await page.locator('#tour-assist').click();
     await page.waitForFunction(() => document.getElementById('tour-rail').hidden);
     await waitText('#active-file', 'Active: design.v');
+    assert.equal(await page.evaluate(() => document.body.classList.contains('dock-right')), false);
 
     // Deep links: ?tour=debug and ?showcase=fsm-control.
     await page.goto(`${baseUrl}?tour=debug`);

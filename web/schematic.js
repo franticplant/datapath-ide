@@ -93,7 +93,7 @@ function wirePath(points) {
 
 // onNavigate: the drill-down path changed (history entry); overlay: { opened, closed } for the inspector card;
 // getStateName(path, bits): FSM state name or null; onShowArray(path): open the State tab on a captured array.
-export function installSchematic({ store, getFiles, getRtlSources, getSettings, getStandard, getTopHint, createWorker, onJump, notify, onNavigate = null, overlay = null, getStateName = null, onShowArray = null }) {
+export function installSchematic({ store, getFiles, getRtlSources, getSettings, getStandard, getTopHint, createWorker, onJump, notify, onNavigate = null, overlay = null, getStateName = null, onShowArray = null, onProgress = null }) {
   const $ = id => document.getElementById(id);
   const S = store.getState();
   const panel = $('schematic');
@@ -592,6 +592,11 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     if (!worker) {
       worker = createWorker();
       worker.onmessage = ({ data }) => {
+        if (data.type === 'progress') {
+          setStatus(data.phase);
+          onProgress?.(data.phase);
+          return;
+        }
         const entry = pending.get(data.requestId);
         if (!entry) return;
         pending.delete(data.requestId);
@@ -889,6 +894,10 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     frame = requestAnimationFrame(applyOverlay);
   }
 
+  let fittedToCanvas = true;
+  let lastStageW = 0;
+  let lastStageH = 0;
+
   // ------------------------------------------------ zoom / pan
   function setView(next) {
     view = next;
@@ -898,9 +907,12 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
 
   function fit() {
     if (!graph) return;
+    fittedToCanvas = true;
     const margin = 24;
     const box = { x: -margin, y: -margin, w: Math.max(graph.width, 60) + margin * 2, h: Math.max(graph.height, 40) + margin * 2 };
     const rect = canvas.getBoundingClientRect();
+    lastStageW = rect.width || 0;
+    lastStageH = rect.height || 0;
     const aspect = rect.width && rect.height ? rect.width / rect.height : box.w / box.h;
     // Keep the drawing centred and unstretched.
     if (box.w / box.h > aspect) { const h = box.w / aspect; box.y -= (h - box.h) / 2; box.h = h; }
@@ -910,6 +922,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
 
   function zoom(factor, cx = view.x + view.w / 2, cy = view.y + view.h / 2) {
     if (!view) return;
+    fittedToCanvas = false;
     const w = Math.min(Math.max(view.w * factor, 40), 40000);
     const h = view.h * (w / view.w);
     setView({ x: cx - (cx - view.x) * (w / view.w), y: cy - (cy - view.y) * (h / view.h), w, h });
@@ -937,6 +950,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     pinch = { dist: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, view: { ...view } };
     drag = null;
     dragMoved = true;
+    fittedToCanvas = false;
     canvas.classList.add('is-panning');
   }
   canvas.addEventListener('pointerdown', event => {
@@ -966,7 +980,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     if (!drag || event.pointerId !== drag.id) return;
     const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
     if (!dragMoved && Math.hypot(dx, dy) < 4) return;
-    if (!dragMoved) { dragMoved = true; capture(drag.id); canvas.classList.add('is-panning'); }
+    if (!dragMoved) { dragMoved = true; fittedToCanvas = false; capture(drag.id); canvas.classList.add('is-panning'); }
     setView({ ...drag.view, x: drag.view.x - dx / rect.width * drag.view.w, y: drag.view.y - dy / rect.height * drag.view.h });
   });
   const endPointer = event => {
@@ -1081,9 +1095,29 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
 
   store.subscribe((_, kind) => { if (kind === 'mem') schedule(); });
 
+  const stage = panel.querySelector('.schem-stage');
+  if (stage && typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => {
+      if (!graph || !view || panel.hidden) return;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 40 || rect.height <= 40) return;
+      if (Math.abs(rect.width - lastStageW) <= 4 && Math.abs(rect.height - lastStageH) <= 4) return;
+      lastStageW = rect.width;
+      lastStageH = rect.height;
+      if (fittedToCanvas) { fit(); return; }
+      const aspect = rect.width / rect.height;
+      const cx = view.x + view.w / 2;
+      const cy = view.y + view.h / 2;
+      const h = view.w / aspect;
+      setView({ x: cx - view.w / 2, y: cy - h / 2, w: view.w, h });
+    }).observe(stage);
+  }
+
   return {
-    render: () => { renderModules(); applyOverlay(); if (graph && !view) fit(); },
+    render: () => { renderModules(); applyOverlay(); if (graph && (!view || fittedToCanvas)) fit(); },
     elaborate,
+    warm: () => request('warm', {}).catch(() => {}),
+    fit,
     hasWorker: () => worker !== null,
     getCrumbs: () => crumbs.map(crumb => crumb.label),
     navigateTo,

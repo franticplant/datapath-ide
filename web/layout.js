@@ -2,12 +2,14 @@
 import { THEMES, THEME_ORDER, applyTheme, normalizeThemeId } from './themes.js';
 
 const key = 'datapath.layout.v1';
-const defaults = {
-  explorerWidth: 230,
-  inspectorWidth: 280,
-  dockHeight: 250,
+const defaults = () => ({
+  explorerWidth: 210,
+  inspectorWidth: 245,
+  dockHeight: Math.round(Math.max(300, Math.min(440, (typeof innerHeight === 'number' ? innerHeight : 900) * 0.42))),
+  dockWidth: Math.round(Math.max(440, Math.min(760, (typeof innerWidth === 'number' ? innerWidth : 1440) * 0.48))),
+  dockPosition: 'bottom',
   explorerHidden: false,
-  inspectorHidden: false,
+  inspectorHidden: typeof innerWidth === 'number' && innerWidth >= 900 && innerWidth < 1280,
   dockHidden: false,
   mode: 'custom',
   zen: false,
@@ -27,11 +29,11 @@ const defaults = {
   autoSwitchWave: true,
   autoClearConsole: true,
   autoScrollConsole: true,
-};
+});
 
 export function installLayout(groups, onLayoutChange = null) {
   const $ = id => document.getElementById(id);
-  let state = { ...defaults };
+  let state = defaults();
   let preZen = null;
 
   try {
@@ -104,7 +106,9 @@ export function installLayout(groups, onLayoutChange = null) {
   function apply() {
     state.explorerWidth = clamp(state.explorerWidth, 160, 420);
     state.inspectorWidth = clamp(state.inspectorWidth, 200, 440);
-    state.dockHeight = clamp(state.dockHeight, 150, Math.max(150, innerHeight * 0.72));
+    state.dockHeight = clamp(state.dockHeight, 150, Math.max(150, innerHeight * 0.78));
+    state.dockWidth = clamp(state.dockWidth, 280, Math.max(280, innerWidth * 0.78));
+    state.dockPosition = state.dockPosition === 'right' ? 'right' : 'bottom';
     state.fontSize = clamp(state.fontSize, 11, 20);
     state.tabWidth = Number(state.tabWidth) === 4 ? 4 : 2;
     state.theme = normalizeThemeId(state.theme);
@@ -124,10 +128,12 @@ export function installLayout(groups, onLayoutChange = null) {
     document.documentElement.style.setProperty('--explorer-width', `${state.explorerWidth}px`);
     document.documentElement.style.setProperty('--inspector-width', `${state.inspectorWidth}px`);
     document.documentElement.style.setProperty('--dock-height', `${state.dockHeight}px`);
+    document.documentElement.style.setProperty('--dock-width', `${state.dockWidth}px`);
 
     document.body.classList.toggle('explorer-hidden', state.explorerHidden);
     document.body.classList.toggle('inspector-hidden', state.inspectorHidden);
     document.body.classList.toggle('dock-hidden', state.dockHidden);
+    document.body.classList.toggle('dock-right', state.dockPosition === 'right');
     document.body.classList.toggle('mode-wave', state.mode === 'wave');
     document.body.classList.toggle('is-zen', state.zen);
     document.body.classList.toggle('status-hidden', !state.showStatusBar);
@@ -143,6 +149,13 @@ export function installLayout(groups, onLayoutChange = null) {
     $('toggle-explorer').setAttribute('aria-pressed', String(!state.explorerHidden));
     $('toggle-inspector').setAttribute('aria-pressed', String(!state.inspectorHidden));
     $('toggle-dock').setAttribute('aria-pressed', String(!state.dockHidden));
+    const rightDock = state.dockPosition === 'right';
+    $('toggle-dock-side')?.setAttribute('aria-pressed', String(rightDock));
+    $('toggle-dock-side')?.setAttribute('aria-label', rightDock ? 'Dock output to bottom' : 'Dock output to right');
+    const dockSplitter = $('dock-splitter');
+    dockSplitter.classList.toggle('vertical', rightDock);
+    dockSplitter.classList.toggle('horizontal', !rightDock);
+    dockSplitter.setAttribute('aria-orientation', rightDock ? 'vertical' : 'horizontal');
     for (const m of ['edit', 'run', 'wave', 'zen']) {
       $(`mode-${m}`).setAttribute('aria-pressed', String(state.zen ? m === 'zen' : state.mode === m));
     }
@@ -150,7 +163,7 @@ export function installLayout(groups, onLayoutChange = null) {
     for (const [id, min, max, value] of [
       ['explorer-splitter', 160, 420, state.explorerWidth],
       ['inspector-splitter', 200, 440, state.inspectorWidth],
-      ['dock-splitter', 150, Math.max(150, Math.floor(innerHeight * 0.72)), state.dockHeight],
+      ['dock-splitter', rightDock ? 280 : 150, Math.floor((rightDock ? innerWidth : innerHeight) * 0.78), rightDock ? state.dockWidth : state.dockHeight],
     ]) {
       const el = $(id);
       el.setAttribute('aria-valuemin', min);
@@ -227,9 +240,22 @@ export function installLayout(groups, onLayoutChange = null) {
     if (mode === 'edit') update({ mode: 'edit', zen: false, explorerHidden: false, dockHidden: true, inspectorHidden: true });
     else if (mode === 'run') update({ mode: 'run', zen: false, explorerHidden: true, dockHidden: false, inspectorHidden: false, dockHeight: Math.max(state.dockHeight, Math.round(innerHeight * 0.45)) });
     else if (mode === 'wave') {
-      update({ mode: 'wave', zen: false, explorerHidden: true, dockHidden: false, inspectorHidden: false });
+      update({ mode: 'wave', zen: false, dockPosition: 'bottom', explorerHidden: true, dockHidden: false, inspectorHidden: false });
       document.querySelector('[data-panel="waveform"]').click();
     }
+  }
+
+  function setMaximized(on) {
+    document.body.classList.toggle('dock-maximized', on);
+    $('maximize-dock').setAttribute('aria-label', on ? 'Restore output' : 'Maximize output');
+    $('maximize-dock').setAttribute('aria-pressed', String(on));
+  }
+  const isMaximized = () => document.body.classList.contains('dock-maximized');
+  function setDockPosition(pos, { show = false } = {}) {
+    update({ dockPosition: pos === 'right' ? 'right' : 'bottom', ...(show ? { dockHidden: false } : {}) });
+  }
+  function toggleDockPosition() {
+    setDockPosition(state.dockPosition === 'right' ? 'bottom' : 'right', { show: true });
   }
 
   function toggleDock() {
@@ -273,25 +299,27 @@ export function installLayout(groups, onLayoutChange = null) {
   $('toggle-explorer').onclick = () => update({ mode: 'custom', explorerHidden: !state.explorerHidden });
   $('toggle-inspector').onclick = () => update({ mode: 'custom', inspectorHidden: !state.inspectorHidden });
   $('toggle-dock').onclick = toggleDock;
-  $('collapse-dock').onclick = () => update({ mode: 'custom', dockHidden: true });
+  $('toggle-dock-side')?.addEventListener('click', toggleDockPosition);
+  $('collapse-dock').onclick = () => { setMaximized(false); update({ mode: 'custom', dockHidden: true }); };
   for (const m of ['edit', 'run', 'wave', 'zen']) $(`mode-${m}`).onclick = () => setMode(m);
   $('exit-zen').onclick = exitZen;
   $('maximize-dock').setAttribute('aria-pressed', 'false');
-  $('maximize-dock').onclick = () => {
-    document.body.classList.toggle('dock-maximized');
-    const active = document.body.classList.contains('dock-maximized');
-    $('maximize-dock').setAttribute('aria-label', active ? 'Restore output' : 'Maximize output');
-    $('maximize-dock').setAttribute('aria-pressed', String(active));
+  $('maximize-dock').onclick = () => setMaximized(!isMaximized());
+
+  const splitterSpec = id => {
+    if (id === 'explorer-splitter') return { field: 'explorerWidth', axis: 'clientX', direction: 1, reset: 210 };
+    if (id === 'inspector-splitter') return { field: 'inspectorWidth', axis: 'clientX', direction: -1, reset: 245 };
+    const right = state.dockPosition === 'right';
+    return right
+      ? { field: 'dockWidth', axis: 'clientX', direction: -1, snap: [Math.round(innerWidth * 0.52), 380] }
+      : { field: 'dockHeight', axis: 'clientY', direction: -1, snap: [Math.round(innerHeight * 0.52), 280] };
   };
 
-  for (const [id, field, axis, direction] of [
-    ['explorer-splitter', 'explorerWidth', 'clientX', 1],
-    ['inspector-splitter', 'inspectorWidth', 'clientX', -1],
-    ['dock-splitter', 'dockHeight', 'clientY', -1],
-  ]) {
+  for (const id of ['explorer-splitter', 'inspector-splitter', 'dock-splitter']) {
     const element = $(id);
     element.onpointerdown = event => {
       if (event.button !== 0) return;
+      const { field, axis, direction } = splitterSpec(id);
       const start = event[axis];
       const original = state[field];
       element.setPointerCapture(event.pointerId);
@@ -303,7 +331,17 @@ export function installLayout(groups, onLayoutChange = null) {
       element.onpointermove = null;
       persist();
     };
+    element.ondblclick = () => {
+      const spec = splitterSpec(id);
+      if (spec.snap) {
+        const [wide, compact] = spec.snap;
+        update({ [spec.field]: Math.abs(state[spec.field] - wide) < 28 ? compact : wide });
+      } else {
+        update({ [spec.field]: spec.reset });
+      }
+    };
     element.onkeydown = event => {
+      const { field, axis, direction } = splitterSpec(id);
       const positive = axis === 'clientX' ? 'ArrowRight' : 'ArrowDown';
       const negative = axis === 'clientX' ? 'ArrowLeft' : 'ArrowUp';
       if (event.key === positive || event.key === negative) {
@@ -314,5 +352,5 @@ export function installLayout(groups, onLayoutChange = null) {
   }
 
   apply();
-  return { getState: () => ({ ...state }), update, setMode, toggleZen, exitZen, toggleDock, apply };
+  return { getState: () => ({ ...state }), update, setMode, toggleZen, exitZen, toggleDock, setDockPosition, toggleDockPosition, setMaximized, isMaximized, apply };
 }

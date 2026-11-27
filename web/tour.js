@@ -9,8 +9,8 @@ export const TOUR_CHAPTERS = [
     fullTitle: 'Boot a MIPS32 CPU',
     projectId: 'mips-cpu',
     panel: 'hw-state',
-    copy: 'Fibonacci assembly runs on your Verilog CPU — watch $t0–$t5 light up in the Register File.',
-    assistLabel: 'View IMEM PC',
+    copy: 'This Verilog CPU (mips_cpu.v) runs Fibonacci from program.asm — watch $t0–$t5 light up live.',
+    assistLabel: 'Peek program.asm & IMEM',
     spotlight: '#hw-arrays',
   },
   {
@@ -174,6 +174,10 @@ const PASSIVE_TARGETS = [
 export function installTour({
   $,
   loadShowcase,
+  openFile,
+  setDockPosition,
+  setInspectorHidden,
+  warmSchematic,
   runSimulation,
   elaborateModule,
   showPanel,
@@ -294,27 +298,36 @@ export function installTour({
     const ch = TOUR_CHAPTERS[index];
 
     if (ch.id === 'boot') {
-      const ok = await stageProject('mips-cpu', guard, 'Assembling & booting CPU…');
+      setDockPosition?.('right', { show: true });
+      setInspectorHidden?.(true);
+      const ok = await stageProject('mips-cpu', guard, 'Compiling Verilog CPU…');
       if (!guard() || !ok) { machine.setBusy(''); return; }
+      openFile?.('mips_cpu.v');
       showPanel('hw-state');
       selectHwArray('mips_cpu_tb.dut.u_rf.regs', { abi: true, disasm: false });
       playHwState();
+      warmSchematic?.();
       machine.setBusy('');
       applySpotlight('#hw-arrays');
     } else if (ch.id === 'xray') {
+      setDockPosition?.('right', { show: true });
+      setInspectorHidden?.(true);
       if (getActiveProjectId() !== 'mips-cpu' || !hasTrace()) {
         const ok = await stageProject('mips-cpu', guard, 'Booting CPU for schematic…');
         if (!guard() || !ok) { machine.setBusy(''); return; }
       }
+      openFile?.('mips_cpu.v');
       machine.setBusy('Elaborating RTL schematic…');
       showPanel('schematic');
       await elaborateModule('mips_cpu');
       if (!guard()) return;
       stepSchem(1);
       machine.setBusy('');
-      applySpotlight('#schem-canvas .schem-cell.kind-module[data-name="u_alu"]', );
+      applySpotlight('#schem-canvas .schem-cell.kind-module[data-name="u_alu"]');
       if (!document.querySelector('#schem-canvas .schem-cell.kind-module[data-name="u_alu"]')) applySpotlight('#schem-learn-bar');
     } else if (ch.id === 'debug') {
+      setDockPosition?.('right', { show: true });
+      setInspectorHidden?.(true);
       const ok = await stageProject('bug-hunter', guard, 'Checking RTL for latches…');
       if (!guard() || !ok) { machine.setBusy(''); return; }
       machine.setBusy('Elaborating schematic…');
@@ -324,6 +337,8 @@ export function installTour({
       machine.setBusy('');
       applySpotlight('#schem-warnings .schem-warning');
     } else if (ch.id === 'time') {
+      setDockPosition?.('bottom', { show: true });
+      setInspectorHidden?.(true);
       const ok = await stageProject('fsm-control', guard, 'Simulating control FSM…');
       if (!guard() || !ok) { machine.setBusy(''); return; }
       showPanel('waveform');
@@ -332,6 +347,8 @@ export function installTour({
       machine.setBusy('');
       applySpotlight('#wave-step-next');
     } else if (ch.id === 'touch') {
+      setDockPosition?.('right', { show: true });
+      setInspectorHidden?.(true);
       machine.setBusy('Starting live FPGA DUT…');
       await waitEngineReady();
       if (!guard()) return;
@@ -342,6 +359,8 @@ export function installTour({
       machine.setBusy('');
       applySpotlight('#board-tick');
     } else if (ch.id === 'verify') {
+      setDockPosition?.('right', { show: true });
+      setInspectorHidden?.(true);
       machine.setBusy('Running 4 ALU testbenches…');
       await waitEngineReady();
       if (!guard()) return;
@@ -381,6 +400,7 @@ export function installTour({
     machine.markDone(state.index);
     if (ch.id === 'boot') {
       pausePlayback();
+      openFile?.('program.asm');
       showPanel('hw-state');
       selectHwArray('mips_cpu_tb.dut.u_imem.mem', { disasm: true, view: 'table' });
     } else if (ch.id === 'xray') {
@@ -397,6 +417,7 @@ export function installTour({
       demoBoardTick();
     } else if (ch.id === 'verify') {
       stop();
+      setDockPosition?.('bottom');
       resetCleanWorkspace();
     }
   }
@@ -468,6 +489,7 @@ export function installTour({
     launchShowcaseLive,
     showFeatured,
     hideFeatured,
+    setBusyText: text => { if (machine.getState().active && text) machine.setBusy(text); },
     isActive: () => machine.getState().active,
     isHeroVisible: () => Boolean(hero && !hero.hidden),
   };
