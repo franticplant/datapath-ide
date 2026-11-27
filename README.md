@@ -3,7 +3,7 @@
 [![CI](https://github.com/franticplant/datapath-ide/actions/workflows/ci.yml/badge.svg)](https://github.com/franticplant/datapath-ide/actions/workflows/ci.yml)
 [![Pages](https://github.com/franticplant/datapath-ide/actions/workflows/pages.yml/badge.svg)](https://github.com/franticplant/datapath-ide/actions/workflows/pages.yml)
 
-**Datapath Studio** is a Verilog and MIPS32 hardware IDE that runs entirely in your browser. The Icarus Verilog 13 compiler and simulator are compiled to WebAssembly and run in Web Workers, so your designs never leave your machine and the app makes no network requests beyond loading its own files.
+**Datapath Studio** is a Verilog and MIPS32 hardware IDE that runs entirely in your browser. The Icarus Verilog 13 compiler and simulator are compiled to WebAssembly and run in Web Workers, so your designs stay in your browser unless you opt in to a self-hosted sync bridge.
 
 **Live demo: <https://franticplant.github.io/datapath-ide/>**
 
@@ -66,6 +66,12 @@ python3 -m http.server 18473 --bind 127.0.0.1 --directory web
 
 Then open <http://127.0.0.1:18473/>.
 
+## Self-Hosted Sync & MCP Bridge
+
+The optional bridge synchronizes a workspace directory with connected browser tabs and exposes MCP tools. It is off by default. Start it with `make serve-sync WORKSPACE=workspace`; the server prints its pairing URL and stores its access token in the workspace. Open the URL containing `?bridgeToken=...` on each device; the IDE removes the token from the address bar after pairing. **Settings → Sync & MCP Bridge** manages the connection and the per-tab remote-control permission. Protect the token: holders can read and write the workspace and, when enabled, control the IDE.
+
+MCP clients can connect to the authenticated HTTP `/mcp` endpoint or launch `mcp/server.mjs` over stdio with `--url` and `--token`. For a local headless session, use `mcp/server.mjs --dir workspace`; its Verilog, RTL analysis and simulation tools run with the bundled WASM engine without a browser.
+
 ## Using Datapath Studio
 
 Create or import Verilog and memory files in **Files**, pick the top module in **Inspect**, then **Compile** or **Run** (Ctrl+Enter). A testbench that calls `$dumpfile`/`$dumpvars` fills the **Waveform** panel. Files can be excluded from the build from their action menu; advanced settings cover defines, include paths, warnings, parameter overrides, plusargs and source order.
@@ -109,13 +115,14 @@ Everything runs from the checked-in `web/` directory; `make help` lists the task
 | Task | Command |
 | --- | --- |
 | Serve locally | `make serve` |
-| Everything CI runs (`check`, unit, smoke, correctness, browser, UX) | `make test` |
+| Everything CI runs (`check`, unit, smoke, correctness, browser, UX, bridge) | `make test` |
 | Static checks: shipped engine/vendor assets exist, no root-relative URLs (the site is served from `/datapath-ide/`) | `make check` |
 | Unit tests: assembler, decoder, FSM states, themes, showcase, history, tour, hierarchy, inline values, RTL linter, resources and critical path, formatter, quick fixes, symbols and instantiation templates | `make test-unit` |
 | Icarus WASM smoke test against `web/engine` (`WASM_DIR=build/wasm` for a fresh build) | `make test-smoke` |
 | Engine correctness: Verilog conformance, netlist equivalence, Live DUT differential, MIPS oracle and VCD spec suites | `make test-correctness` |
 | Playwright end-to-end suite | `make test-browser` |
 | Playwright responsive UX scenario audit | `make test-ux` |
+| Self-hosted sync and MCP protocol/browser tests | `make test-mcp` |
 | Rebuild `web/vendor` from `package-lock.json` | `make bundle` |
 | Prove `web/vendor` is reproducible byte-for-byte | `make check-bundle` |
 

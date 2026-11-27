@@ -400,6 +400,7 @@
 
   <footer class="statusbar">
     <span id="hint" class="hint" title="Click to open Verilog Reference Card"></span>
+    <button id="bridge-pill" class="bridge-pill" type="button" hidden aria-label="Sync and MCP Bridge status"></button>
     <span id="save-state" class="wide" aria-live="polite">Local workspace</span>
     <button id="footer-wrap" class="footer-btn wide" title="Toggle word wrap">Wrap: Off</button>
     <button id="footer-tab" class="footer-btn wide" title="Toggle tab width">Spaces: 2</button>
@@ -485,8 +486,20 @@
       <label class="check-label"><input id="auto-clear-console" type="checkbox" checked><span>Clear Console before each run</span></label>
       <label class="check-label"><input id="auto-scroll-console" type="checkbox" checked><span>Auto-scroll Console</span></label>
 
-      <div class="dialog-actions"><button id="settings-about" type="button">About</button><button class="primary" value="close">Done</button></div>
+      <div class="dialog-actions"><button id="settings-bridge" type="button">Sync &amp; MCP Bridge…</button><button id="settings-about" type="button">About</button><button class="primary" value="close">Done</button></div>
     </form>
+  </dialog>
+
+  <dialog id="bridge-dialog" class="wide-dialog bridge-dialog" aria-labelledby="bridge-title">
+    <div class="dialog-head"><h2 id="bridge-title">Sync &amp; MCP Bridge</h2><button id="bridge-close" type="button" class="icon-btn" aria-label="Close bridge settings">×</button></div>
+    <p>Connect this workspace to your bridge server.</p>
+    <label for="bridge-url">Server WebSocket URL (blank uses this server)</label><input id="bridge-url" type="url" placeholder="Automatic" autocomplete="off" spellcheck="false">
+    <label for="bridge-token">Access token</label><input id="bridge-token" type="password" autocomplete="off" spellcheck="false">
+    <label for="bridge-label">Device label</label><input id="bridge-label" type="text" maxlength="80" autocomplete="off">
+    <label class="check-label"><input id="bridge-allow-remote" type="checkbox"><span>Allow MCP remote control in this tab</span></label>
+    <p id="bridge-status" role="status">Disconnected</p>
+    <h3>Connected devices</h3><ul id="bridge-clients"></ul>
+    <div class="dialog-actions"><button id="bridge-connect" type="button">Connect</button><button id="bridge-disconnect" type="button">Disconnect</button><button id="bridge-done" type="button" class="primary">Done</button></div>
   </dialog>
 
   <dialog id="about-dialog" class="about-dialog" aria-labelledby="about-title">

@@ -42,6 +42,7 @@ jobs:
           node tests/unit/tour.test.mjs
           node tests/unit/stage-b.test.mjs
           node tests/unit/stage-c.test.mjs
+          node tests/unit/stage-e.test.mjs
 
       - name: Correctness suites
         run: make test-correctness USE_MVM=0
@@ -78,6 +79,11 @@ jobs:
 
       - name: UX scenario audit
         run: node tests/browser/ux-vibe-check.cjs
+
+      - name: Self-hosted sync & MCP bridge
+        run: |
+          node tests/unit/mcp-bridge.test.mjs
+          node tests/browser/mcp-sync.cjs
 
   secrets:
     name: Secret scan

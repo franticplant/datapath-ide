@@ -1,3 +1,5 @@
+import { installMcpBridge } from './mcp-bridge.js';
+import { analyzeResources, analyzeCriticalPath } from './rtl-metrics.js';
 import { computeQuickFix, applyQuickFix, extractFileSymbols, buildInstantiationTemplate } from './rtl-quickfix.js';
 import { installQuickOpen } from './quick-open.js';
 import { lintRtl } from './rtl-linter.js';
@@ -42,6 +44,8 @@ let current = 'design.v';
 let diagnostics = [];
 let icarusDiagnostics = [];
 let lastElaboratedJson = null, elaboratedFiles = null, elaboratedSources = null;
+let bridge = null, bridgeBaseline = null, bridgeSyncEpoch = 0;
+let bridgeResources = null, bridgeCriticalPath = null;
 let lintSeq = 0, lintTimer = null, lintWorker = null, inlineTimer;
 let outputOpened = false;
 let simulationSettings = null;
@@ -103,6 +107,7 @@ function workspaceSnapshot() {
 }
 
 function save() {
+  syncBridgeOutbound();
   if (!hydrated) { pendingSave = true; return; }
   try {
     const { mirrored } = storage.save(workspaceSnapshot());
@@ -114,11 +119,13 @@ function save() {
 
 // The IndexedDB copy wins only when it is newer than the mirror (e.g. workspaces over the 1 MB mirror limit).
 async function hydrateFromDurable() {
+  const syncEpoch = bridgeSyncEpoch;
   const durable = await storage.loadDurable();
   hydrated = true;
   // Saves queued during boot only re-save the startup state, so a newer durable snapshot still wins.
   const hadPending = pendingSave;
   pendingSave = false;
+  if (bridgeSyncEpoch !== syncEpoch) { save(); return; }
   if (validSnapshot(durable) && Number(durable.savedAt) > restoredAt) {
     hadSavedWorkspace = true;
     dismissFeatured();
@@ -1659,6 +1666,7 @@ function buildCommands() {
     { label: 'Interactive Hardware Tour', hint: '6 chapters', run: () => tour?.start(0) },
     { label: 'About Datapath Studio', hint: '', run: () => openAbout() },
     { label: 'Starter Templates', hint: '', run: () => openShowcase() },
+    { label: 'Sync & MCP Bridge', hint: '', run: openBridgeDialog },
     { label: 'Editor & Workspace Settings', hint: '', run: () => $('preferences').click() },
     ...Object.keys(files).sort().map(path => ({ label: `Open file: ${path}`, hint: 'file', run: () => openFile(path) })),
   ];
@@ -1860,7 +1868,8 @@ schematic = installSchematic({
   onShowArray: path => { showPanel('hw-state'); hwState.select(path); },
   onProgress: phase => tour?.setBusyText(phase),
   onPlotSignal: path => { showPanel('waveform'); return waveform.plotSignal(path); },
-  onElaborated: ({ yosysJson, files: sourceFiles, sourceFiles: included }) => {
+  onElaborated: ({ yosysJson, resources, criticalPath, files: sourceFiles, sourceFiles: included }) => {
+    bridgeResources = resources; bridgeCriticalPath = criticalPath;
     lastElaboratedJson = yosysJson;
     elaboratedFiles = sourceFiles;
     elaboratedSources = included;
@@ -1988,6 +1997,7 @@ tour = installTour({
 });
 
 hydrateFromDurable();
+initMcpBridge();
 
 try { engine.start(); } catch (error) { engineStatus('Engine unavailable', 'st-error'); $('console-output').textContent = error.message; }
 
@@ -2159,3 +2169,190 @@ signalInspector.addEventListener('dragstart', event => {
   event.dataTransfer.setData('application/x-datapath-signal', JSON.stringify({ path }));
   event.dataTransfer.setData('text/plain', path); event.dataTransfer.effectAllowed = 'copy';
 });
+
+// Keep local persistence and the optional bridge in sync through the same save path.
+function bridgeSnapshot() {
+  return { files: { ...files }, folders: [...folders].sort(), excluded: [...excluded].sort() };
+}
+function syncBridgeOutbound() {
+  if (!bridge) return;
+  const next = bridgeSnapshot(), previous = bridgeBaseline;
+  bridgeBaseline = next;
+  if (!previous) return;
+  for (const [path, content] of Object.entries(next.files)) if (previous.files[path] !== content) bridge.notifyFileChanged(path, content);
+  for (const path of Object.keys(previous.files)) if (!Object.hasOwn(next.files, path)) bridge.notifyFileDeleted(path);
+  if (JSON.stringify(previous.folders) !== JSON.stringify(next.folders) || JSON.stringify(previous.excluded) !== JSON.stringify(next.excluded)) bridge.notifyMetaChanged(next.folders, next.excluded);
+}
+function applyBridgeWorkspace(incomingFiles, incomingFolders, incomingExcluded) {
+  const nextFiles = Object.create(null);
+  for (const [path, text] of Object.entries(incomingFiles || {})) if (validPath(path) && typeof text === 'string') nextFiles[path] = text;
+  const oldFiles = files;
+  files = nextFiles;
+  folders = new Set((Array.isArray(incomingFolders) ? incomingFolders : []).filter(validPath));
+  excluded = new Set((Array.isArray(incomingExcluded) ? incomingExcluded : []).filter(path => Object.hasOwn(files, path)));
+  collapsed = new Set([...collapsed].filter(path => folders.has(path)));
+  const removed = new Set(Object.keys(oldFiles).filter(path => !Object.hasOwn(files, path)));
+  if (!Object.hasOwn(files, current)) current = Object.keys(files)[0] || '';
+  if (removed.size) groups.removePaths(path => removed.has(path), current);
+  for (const [path, text] of Object.entries(files)) if (oldFiles[path] !== text) { symbolCache.delete(path); groups.syncDocument(path, text, null); }
+  if (!groups.activePath() && current) groups.openFile(current);
+  if (!current) groups.activeEditor()?.open('', '');
+  icarusDiagnostics = []; lastElaboratedJson = null; bridgeResources = null; bridgeCriticalPath = null;
+  bridgeBaseline = bridgeSnapshot();
+  suggestModules(); render(); refreshRtlProblems(); renderBreadcrumbs(); scheduleInline();
+  save();
+}
+function bridgeStatusChanged(state) {
+  const pill = $('bridge-pill');
+  pill.hidden = !state.enabled;
+  pill.classList.toggle('is-disconnected', !state.synced);
+  pill.textContent = state.synced ? (state.allowRemote ? '● Sync + MCP' : '● Synced') : '○ Reconnecting (local)';
+  $('bridge-status').textContent = state.synced ? 'Connected and synchronized' : state.enabled ? (state.error || 'Connecting or reconnecting; local work is available') : 'Disconnected';
+  $('bridge-connect').disabled = state.enabled && state.connected;
+  $('bridge-disconnect').disabled = !state.enabled;
+  const list = $('bridge-clients'); list.replaceChildren();
+  for (const client of state.clients) {
+    const item = document.createElement('li');
+    item.textContent = typeof client === 'string' ? client : `${client.label || client.clientId || 'Device'}${client.clientId === state.clientId ? ' (this tab)' : ''}`;
+    list.append(item);
+  }
+  if (!$('bridge-dialog').open) {
+    $('bridge-url').value = state.url || ''; $('bridge-token').value = state.token || '';
+    $('bridge-label').value = state.label || ''; $('bridge-allow-remote').checked = state.allowRemote;
+  }
+}
+function openBridgeDialog() {
+  if (!bridge) { showToast('Bridge is still starting'); return; }
+  const state = bridge.getState();
+  $('bridge-url').value = state.url || ''; $('bridge-token').value = state.token || ''; $('bridge-label').value = state.label || '';
+  $('bridge-allow-remote').checked = state.allowRemote;
+  for (const id of ['settings-dialog', 'more-dialog']) if ($(id).open) $(id).close();
+  if (!$('bridge-dialog').open) $('bridge-dialog').showModal();
+}
+$('bridge-pill').onclick = openBridgeDialog;
+$('settings-bridge').onclick = openBridgeDialog;
+$('bridge-close').onclick = $('bridge-done').onclick = () => $('bridge-dialog').close();
+$('bridge-dialog').addEventListener('click', event => { if (event.target === $('bridge-dialog')) $('bridge-dialog').close(); });
+$('bridge-connect').onclick = () => {
+  const token = $('bridge-token').value.trim();
+  if (!token) { $('bridge-status').textContent = 'Enter an access token to connect.'; return; }
+  bridge.configure({ enabled: true, url: $('bridge-url').value.trim(), token, label: $('bridge-label').value.trim() || 'Desktop', allowRemote: $('bridge-allow-remote').checked });
+};
+$('bridge-disconnect').onclick = () => bridge.disconnect();
+$('bridge-allow-remote').onchange = () => bridge?.configure({ allowRemote: $('bridge-allow-remote').checked });
+
+function bridgeProblems() {
+  return diagnostics.slice().sort((a, b) => String(a.file || '').localeCompare(String(b.file || '')) || (a.line || 0) - (b.line || 0));
+}
+function bridgeRunResult(ok) { return { ok, consoleOutput: $('console-output').textContent, problems: bridgeProblems(), tests: $('tests-summary').textContent }; }
+async function bridgeRun(params) {
+  const action = params.action || 'run';
+  if (params.topModule !== undefined) { $('top-module').value = String(params.topModule); save(); }
+  if (action === 'stop') return bridgeRunResult(engine.stop());
+  if (action === 'assemble') {
+    const paths = isAsm(current) ? [current] : buildAsmPaths();
+    if (!paths.length) throw new Error('No assembly files to assemble');
+    const outcome = assemblePaths(paths); reportAssembly(outcome, 'Assemble'); return bridgeRunResult(outcome.ok);
+  }
+  if (!['run', 'compile'].includes(action)) throw new Error('Unknown run action');
+  if (!await waitUntil(() => engine.ready && engine.activeRunId === null, 30000)) throw new Error('Simulation engine is busy or unavailable');
+  let finish;
+  const done = new Promise(resolve => { finish = resolve; simRunWaiters.push(resolve); });
+  if (!execute(action)) { const index = simRunWaiters.indexOf(finish); if (index >= 0) simRunWaiters.splice(index, 1); return bridgeRunResult(false); }
+  let timer;
+  const outcome = await Promise.race([done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Simulation timed out')), 60000); })]).finally(() => { clearTimeout(timer); const index = simRunWaiters.indexOf(finish); if (index >= 0) simRunWaiters.splice(index, 1); });
+  return bridgeRunResult(outcome.ok);
+}
+async function bridgeSchematic(params) {
+  showPanel('schematic'); schematic.render();
+  const select = $('schem-module');
+  if (params.moduleName) {
+    if (![...select.options].some(option => option.value === params.moduleName)) throw new Error('Schematic module not found');
+    select.value = params.moduleName;
+  }
+  if (params.elaborate) {
+    await schematic.elaborate();
+    if ($('schem-status').classList.contains('is-error')) throw new Error($('schem-status').textContent);
+  }
+  for (const [key, id] of [['criticalPath', 'schem-critpath'], ['resources', 'schem-resources']]) {
+    if (typeof params[key] === 'boolean' && ($(id).getAttribute('aria-pressed') === 'true') !== params[key]) $(id).click();
+  }
+  if (params.inspectCell) {
+    const cell = [...document.querySelectorAll('#schem-canvas .schem-cell')].find(item => item.dataset.name === params.inspectCell || item.dataset.node === `cell:${params.inspectCell}`);
+    if (!cell) throw new Error('Schematic cell not found');
+    cell.dispatchEvent(new MouseEvent('click', { bubbles: true })); showPanel('schematic');
+  }
+  const moduleName = select.value;
+  return { resources: lastElaboratedJson ? analyzeResources(lastElaboratedJson, moduleName) : bridgeResources, criticalPath: lastElaboratedJson ? analyzeCriticalPath(lastElaboratedJson, moduleName) : bridgeCriticalPath };
+}
+async function bridgeBoard(params) {
+  showPanel('board'); $('board-mode-live').click();
+  if (params.moduleName && !board.isLive()) {
+    const select = $('board-module'); if (![...select.options].some(item => item.value === params.moduleName)) throw new Error('Board module not found'); select.value = params.moduleName;
+  }
+  if (params.liveAction === 'stop') { await board.stopLive(); }
+  else if (params.liveAction === 'start' && !board.isLive()) {
+    $('board-live-start').click();
+    if (!await waitUntil(() => board.isLive() && $('board-live-time').textContent !== '—', 30000)) throw new Error('Live board failed to start');
+  } else if (params.liveAction && !['start', 'stop', 'tick'].includes(params.liveAction)) throw new Error('Unknown board action');
+  if (params.drive && typeof params.drive === 'object') {
+    for (const [port, value] of Object.entries(params.drive)) {
+      const row = [...document.querySelectorAll('#board-live-inputs [data-port]')].find(item => item.dataset.port === port);
+      if (!row) throw new Error(`Board input not found: ${port}`);
+      const toggle = row.querySelector('.board-switch'), field = row.querySelector('.board-bus-input');
+      if (toggle) {
+        const desired = value === true || value === 1 || value === '1';
+        if ((toggle.getAttribute('aria-checked') === 'true') !== desired) { toggle.click(); if (!await waitUntil(() => [...document.querySelectorAll('#board-live-inputs [data-port]')].find(item => item.dataset.port === port)?.querySelector('.board-switch')?.getAttribute('aria-checked') === String(desired), 10000)) throw new Error(`Could not drive ${port}`); }
+      } else if (field) {
+        let n; try { n = BigInt(value); } catch { throw new Error(`Invalid value for ${port}`); }
+        if (n < 0n) throw new Error(`Invalid value for ${port}`);
+        field.value = n.toString(16); field.dispatchEvent(new Event('change', { bubbles: true }));
+        if (!await waitUntil(() => [...document.querySelectorAll('#board-live-inputs [data-port]')].find(item => item.dataset.port === port)?.querySelector('.board-bus-input')?.value.toLowerCase() === n.toString(16), 10000)) throw new Error(`Could not drive ${port}`);
+      }
+    }
+  }
+  const ticks = params.ticks ?? (params.liveAction === 'tick' ? 1 : 0);
+  if (!Number.isInteger(ticks) || ticks < 0 || ticks > 10000) throw new Error('Invalid tick count');
+  for (let i = 0; i < ticks; i++) {
+    if ($('board-tick').disabled) throw new Error('Board clock is unavailable');
+    const before = $('board-live-time').textContent; $('board-tick').click();
+    if (!await waitUntil(() => $('board-live-time').textContent !== before && !$('board-tick').disabled, 10000)) throw new Error('Board tick timed out');
+  }
+  const values = selector => Object.fromEntries([...document.querySelectorAll(`${selector} [data-port]`)].map(row => [row.dataset.port, row.querySelector('.board-switch')?.getAttribute('aria-checked') ?? row.querySelector('.board-bus-input')?.value ?? row.querySelector('.board-readout')?.textContent ?? '']));
+  const time = $('board-live-time').textContent;
+  return { cycle: Number(/cycle\s+(\d+)/.exec(time)?.[1] || 0), time, inputs: values('#board-live-inputs'), outputs: values('#board-live-outputs') };
+}
+function initMcpBridge() {
+  bridgeBaseline = bridgeSnapshot();
+  bridge = installMcpBridge({
+    onStatus: bridgeStatusChanged,
+    onSync: message => { bridgeSyncEpoch++; applyBridgeWorkspace(message.files, message.folders, message.excluded); },
+    onFileChanged: message => { if (validPath(message.path) && typeof message.content === 'string') applyBridgeWorkspace({ ...files, [message.path]: message.content }, [...folders], [...excluded]); },
+    onFileDeleted: message => { if (!Object.hasOwn(files, message.path)) return; const next = { ...files }; delete next[message.path]; applyBridgeWorkspace(next, [...folders], [...excluded]); },
+    onMetaChanged: message => applyBridgeWorkspace(files, message.folders, message.excluded),
+    onRemoteAction: method => { if (!['ide_get_state', 'ide_get_problems'].includes(method)) showToast(`MCP: ${method.replace(/^ide_/, '').replaceAll('_', ' ')}`); },
+    ide_get_state: () => ({ currentFile: current, openTabs: groups.groups.flatMap(group => group.tabs.map(tab => tab.path)), activePanel: selectedPanel(), mode: layout.getState().mode, cursor: { ...cursorState }, activeDock: layout.getState().dockPosition, problemsCount: diagnostics.length, rev: bridge.getState().rev }),
+    ide_get_problems: () => bridgeProblems(),
+    ide_navigate: params => {
+      if (params.file) { if (!Object.hasOwn(files, params.file)) throw new Error('File not found'); if (params.line) openAt(params.file, Number(params.line)); else openFile(params.file); }
+      else if (params.line) openAt(current, Number(params.line));
+      if (params.mode && ['edit', 'run', 'wave', 'zen'].includes(params.mode)) layout.setMode(params.mode);
+      else if (params.mode && ['files', 'code', 'console', 'waveform', 'inspect'].includes(params.mode)) selectView(params.mode);
+      if (params.sidebarTab && ['files', 'hierarchy'].includes(params.sidebarTab)) $(`sidebar-${params.sidebarTab}`).click();
+      if (params.panel) { if (![...document.querySelectorAll('[data-panel]')].some(tab => tab.dataset.panel === params.panel)) throw new Error('Panel not found'); showPanel(params.panel); }
+      return { currentFile: current, activePanel: selectedPanel(), cursor: { ...cursorState } };
+    },
+    ide_open_showcase: async params => { if (!loadShowcaseProject(params.id)) throw new Error('Showcase not found'); if (params.chapter !== undefined) { tour.start(Number(params.chapter) || 0); await waitUntil(() => $('tour-busy').hidden, 60000); } return { id: activeShowcaseId }; },
+    ide_run: bridgeRun,
+    ide_apply_quick_fix: params => { const path = params.file || current, line = Number(params.line) || cursorState.line; const item = diagnostics.find(entry => entry.file === path && entry.line === line && computeQuickFix(files[path], entry)); const fix = item && computeQuickFix(files[path], item); return { applied: item ? applyDiagnosticFix(item) : false, title: fix?.title || null }; },
+    ide_waveform: params => {
+      if (params.cursorTime !== undefined) { let time; try { time = BigInt(params.cursorTime); } catch { throw new Error('Invalid cursor time'); } if (time < 0n) throw new Error('Invalid cursor time'); waveform.store.setMarker(time); }
+      if (params.radix !== undefined) { const option = [...$('wave-radix').options].find(item => item.value === params.radix); if (!option) throw new Error('Invalid waveform radix'); $('wave-radix').value = option.value; $('wave-radix').dispatchEvent(new Event('change')); }
+      if (params.plotSignal) { showPanel('waveform'); if (!waveform.plotSignal(params.plotSignal)) throw new Error('Signal not found'); }
+      const state = waveform.store.getState();
+      return { cursor: waveform.store.currentTime().toString(), signals: (state.trace?.signals || []).map(signal => ({ path: signal.path, width: signal.width, value: waveform.store.valueOf(signal) })) };
+    },
+    ide_schematic: bridgeSchematic,
+    ide_board: bridgeBoard,
+  });
+}

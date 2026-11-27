@@ -1449,3 +1449,12 @@ body.dock-maximized .editor-column, .mode-wave .editor-column { display: none; }
 .panel-tabs .is-dragging { opacity: .5; }
 .panel-tabs .is-drop-target, #toggle-dock-side.is-drop-target { outline: 2px solid var(--primary); outline-offset: -2px; }
 .signal-inspector-row[draggable="true"] { cursor: grab; }
+
+.bridge-pill { flex: none; color: var(--primary); background: var(--chip); border-radius: 99px; padding: 2px 8px; font-size: 11px; white-space: nowrap; }
+.bridge-pill.is-disconnected { color: var(--muted); }
+.bridge-dialog { width: min(520px, 94vw); }
+.bridge-dialog > input { width: 100%; margin-bottom: 10px; }
+.bridge-dialog h3 { font-size: 12px; color: var(--muted); }
+#bridge-clients { max-height: 130px; overflow: auto; padding-left: 20px; color: var(--text); font-size: 12px; }
+#bridge-status { color: var(--muted); font-size: 12px; }
+@media (max-width: 900px) { body:not(.status-hidden):has(#bridge-pill:not([hidden])) .statusbar { display: flex; } }
