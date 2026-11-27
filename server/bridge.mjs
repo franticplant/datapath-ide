@@ -22,7 +22,7 @@ export const DEFAULT_WEB_DIR = join(REPO_ROOT, 'web');
 export const TOKEN_FILE = '.bridge-token';
 export const CREDENTIAL_NAME = 'bridge-token'; // systemd LoadCredential[Encrypted]=bridge-token:...
 export const META_FILE = '.datapath-project.json';
-export const SERVER_INFO = { name: 'datapath-studio-mcp', version: '0.2.0' };
+export const SERVER_INFO = { name: 'datapath-studio-mcp', version: '0.3.0' };
 export const PROTOCOL_VERSION = '2024-11-05';
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 5000;

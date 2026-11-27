@@ -367,7 +367,7 @@ await check('external disk edits are pushed within the poll interval (no inotify
 await check('MCP over HTTP: initialize, notifications, ping, tools/list, batches and errors', async () => {
   const init = await mcp(bridge, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
   assert.equal(init.status, 200);
-  assert.deepEqual(init.json.result.serverInfo, { name: 'datapath-studio-mcp', version: '0.2.0' });
+  assert.deepEqual(init.json.result.serverInfo, { name: 'datapath-studio-mcp', version: '0.3.0' });
   assert.equal(init.json.result.protocolVersion, '2024-11-05');
   assert.deepEqual(init.json.result.capabilities, { tools: {}, resources: {} });
   const note = await http(`${bridge.url}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${bridge.token}` }, body: { jsonrpc: '2.0', method: 'notifications/initialized' } });
