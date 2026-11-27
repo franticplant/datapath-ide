@@ -1,0 +1,30 @@
+name: Dependabot auto-merge
+
+# pull_request_target runs with the base branch's workflow and never checks out the PR's code.
+on: pull_request_target
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'franticplant/datapath-ide' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve and enable squash auto-merge (patch and minor only)
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"

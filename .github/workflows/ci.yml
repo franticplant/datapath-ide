@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "release-branch/*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.head_ref || github.run_id }}"
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Unit, smoke, assets and bundle
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[ci skip]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Shipped assets and Pages-safe paths
+        run: make check USE_MVM=0
+
+      - name: Icarus WASM smoke test
+        run: node engine/smoke.mjs
+
+      - name: Unit tests
+        run: |
+          node tests/unit/stage4.test.mjs
+          node tests/unit/stage5.test.mjs
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Vendored bundles are reproducible
+        run: make check-bundle USE_MVM=0
+
+  browser:
+    name: Browser suite (Playwright, sections 1-19)
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[ci skip]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      # mcr.microsoft.com/playwright:v1.48.2-jammy (linux/amd64), the image the suite is verified with locally.
+      image: mcr.microsoft.com/playwright:v1.48.2-jammy@sha256:ca6450233e72d43475836930f32bad51cff9258794c6f5f506264dda4276b2cf
+      options: --shm-size=1g
+    env:
+      # Job containers run as root, where Chromium's sandbox is unavailable; the suite only loads this
+      # repository's own pages from 127.0.0.1. Local runs (make test-browser) keep the sandbox on.
+      PW_CHROMIUM_SANDBOX: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run the end-to-end suite
+        run: node tests/browser/workspace.cjs
+
+  secrets:
+    name: Secret scan
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[ci skip]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"

@@ -1,0 +1,33 @@
+{
+  "name": "datapath-ide",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Datapath Studio: browser Verilog & MIPS32 hardware IDE with an Icarus Verilog WASM simulator",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/franticplant/datapath-ide.git"
+  },
+  "scripts": {
+    "test": "make test",
+    "bundle": "node scripts/bundle-editor.mjs && node scripts/bundle-schematic.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/legacy-modes": "^6.5.5",
+    "@codemirror/lint": "^6.9.8",
+    "@codemirror/search": "^6.7.3",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.44.2",
+    "@lezer/highlight": "^1.2.5",
+    "codemirror": "^6.0.2",
+    "elkjs": "^0.12.2",
+    "esbuild": "^0.28.2",
+    "fflate": "^0.8.3"
+  }
+}

@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "release-${{ inputs.tag || github.ref_name }}"
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build, test and attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Validate tag
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$TAG' is not a vX.Y.Z tag"; exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Verify
+        run: |
+          make check USE_MVM=0
+          node engine/smoke.mjs
+          node tests/unit/stage4.test.mjs
+          node tests/unit/stage5.test.mjs
+
+      - name: Package static site
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          mkdir -p dist/stage/datapath-ide
+          cp -R web/. dist/stage/datapath-ide/
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/stage/datapath-ide/
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${SOURCE_DATE_EPOCH}" \
+            -C dist/stage -cf - datapath-ide | gzip -9n > "dist/datapath-ide-static-${TAG}.tar.gz"
+          rm -r dist/stage
+          (cd dist && sha256sum "datapath-ide-static-${TAG}.tar.gz" > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/datapath-ide-static-${{ env.TAG }}.tar.gz
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          sparse-checkout: docs/release-notes
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - name: Verify checksums and provenance
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          gh attestation verify "dist/datapath-ide-static-${TAG}.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+
+      - name: Refuse to overwrite an existing release
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; tags and releases are immutable."; exit 1
+          fi
+
+      - name: Create release
+        run: |
+          sha="$(git rev-parse HEAD)"
+          flags=(--notes-file notes.md --verify-tag)
+          if [ -f "docs/release-notes/${TAG}.md" ]; then
+            cp "docs/release-notes/${TAG}.md" notes.md
+          else
+            printf '# Datapath Studio %s\n\nLive: https://franticplant.github.io/datapath-ide/\n' "$TAG" > notes.md
+            flags+=(--generate-notes)
+          fi
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          {
+            printf '\n---\n'
+            printf 'Built from `%s` by the Release workflow.\n\n' "$sha"
+            printf 'Verify the download:\n\n'
+            printf '```sh\n'
+            printf 'sha256sum -c SHA256SUMS\n'
+            printf 'gh attestation verify datapath-ide-static-%s.tar.gz --repo %s\n' "$TAG" "$GITHUB_REPOSITORY"
+            printf '```\n'
+          } >> notes.md
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Datapath Studio $TAG" "${flags[@]}"

@@ -1,0 +1,379 @@
+--- a/t-dll.cc
++++ b/t-dll.cc
+@@ -33,6 +33,9 @@
+ # include  <cstdlib>
+ # include  "ivl_assert.h"
+ # include  "ivl_alloc.h"
++#ifdef __EMSCRIPTEN__
++extern "C" int target_design_json(ivl_design_t des);
++#endif
+ 
+ using namespace std;
+ 
+@@ -667,6 +670,9 @@
+ {
+       const char*dll_path_ = des->get_flag("DLL");
+ 
++#ifdef __EMSCRIPTEN__
++      dll_ = reinterpret_cast<ivl_dll_t>(1);
++#else
+       dll_ = ivl_dlopen(dll_path_);
+ 
+       if ((dll_ == 0) && (dll_path_[0] != '/')) {
+@@ -682,6 +688,7 @@
+ 	    cerr << dll_path_ << ": " << dlerror() << endl;
+ 	    return false;
+       }
++#endif
+ 
+       stmt_cur_ = 0;
+ 
+@@ -712,7 +719,19 @@
+ 	    add_root(*cur);
+       }
+ 
++#ifdef __EMSCRIPTEN__
++	/* Targets are linked in statically: DLL=json.tgt selects the
++	   schematic JSON writer (engine/tgt-json.cc), anything else vvp. */
++      {
++	    size_t len = strlen(dll_path_);
++	    if (len >= 8 && strcmp(dll_path_ + len - 8, "json.tgt") == 0)
++		  target_ = &target_design_json;
++	    else
++		  target_ = &target_design;
++      }
++#else
+       target_ = reinterpret_cast<target_design_f>(ivl_dlsym(dll_, LU "target_design" TU));
++#endif
+       if (target_ == 0) {
+ 	    cerr << dll_path_ << ": error: target_design entry "
+ 		  "point is missing." << endl;
+@@ -742,7 +761,9 @@
+ 	    rc = errors;
+       }
+ 
++#ifndef __EMSCRIPTEN__
+       ivl_dlclose(dll_);
++#endif
+       return rc;
+ }
+ 
+--- a/vpi_modules.cc
++++ b/vpi_modules.cc
+@@ -237,10 +237,30 @@
+ 
+ typedef PLI_UINT32 (*vpip_set_callback_t)(vpip_routines_s*, PLI_UINT32);
+ #endif
++#include <cstring>
+ typedef void (*vlog_startup_routines_t)(void);
++#ifdef __EMSCRIPTEN__
++extern "C" void (*icarus_v2005_math_startup[])(void);
++#endif
+ 
+ bool load_vpi_module(const char*path)
+ {
++#ifdef __EMSCRIPTEN__
++    const char*base = strrchr(path, '/');
++    base = base ? base + 1 : path;
++    if (!strcmp(base, "system.vpi") || !strcmp(base, "system")) return true;
++    if (!strcmp(base, "v2005_math.vpi") || !strcmp(base, "v2005_math")) {
++        static bool registered = false;
++        if (!registered) {
++            registered = true;
++            for (unsigned idx = 0; icarus_v2005_math_startup[idx]; idx++)
++                icarus_v2005_math_startup[idx]();
++        }
++        return true;
++    }
++    cerr << "Unsupported compiler VPI module in browser: " << path << endl;
++    return false;
++#endif
+     ivl_dll_t dll = ivl_dlopen(path, false);
+     if (dll == 0) {
+ 	cerr << "error: Failed to open '" << path << "' because:" << endl;
+--- a/synth2.cc
++++ b/synth2.cc
+@@ -2233,12 +2233,28 @@
+ 
+ 	/* Create shared pullup and pulldown nodes (if they don't already
+ 	   exist) for use when creating clock/gate enables. */
++	/* Schematic mode (flag SCHEMATIC_NONFATAL): processes that
++	   cannot be synthesized stay in the design as behavioral blocks
++	   instead of failing compilation, and initial blocks are ignored.
++	   Normal compilation never sets this flag. */
++      const bool nonfatal = des->get_flag("SCHEMATIC_NONFATAL")[0] != 0;
++      if (nonfatal && top->type() == IVL_PR_INITIAL)
++	    return;
++      const unsigned prev_errors = des->errors;
++
+       top->scope()->add_tie_hi(des);
+       top->scope()->add_tie_lo(des);
+ 
+       if (top->is_synchronous()) {
+ 	    bool flag = top->synth_sync(des);
+ 	    if (! flag) {
++		  if (nonfatal) {
++			des->errors = prev_errors;
++			cerr << top->get_fileline() << ": warning: "
++			     << "Synchronous process kept as a behavioral block."
++			     << endl;
++			return;
++		  }
+ 		  cerr << top->get_fileline() << ": error: "
+ 		       << "Unable to synthesize synchronous process."
+ 		       << endl;
+@@ -2275,6 +2291,13 @@
+       }
+ 
+       if (! top->synth_async(des)) {
++	    if (nonfatal) {
++		  des->errors = prev_errors;
++		  cerr << top->get_fileline() << ": warning: "
++		       << "Combinational process kept as a behavioral block."
++		       << endl;
++		  return;
++	    }
+ 	    cerr << top->get_fileline() << ": error: "
+ 		 << "Unable to synthesize asynchronous process."
+ 		 << endl;
+--- a/vvp/vpi_modules.cc
++++ b/vvp/vpi_modules.cc
+@@ -34,6 +34,10 @@
+ typedef PLI_UINT32 (*vpip_set_callback_t)(vpip_routines_s*, PLI_UINT32);
+ #endif
+ typedef void (*vlog_startup_routines_t)(void);
++#ifdef __EMSCRIPTEN__
++extern "C" void (*vlog_startup_routines[])(void);
++extern "C" void (*icarus_v2005_math_startup[])(void);
++#endif
+ 
+ # define VPIP_MODULE_PATH_MAX 64
+ 
+@@ -144,6 +148,32 @@
+ 
+ void vpip_load_module(const char*name)
+ {
++#ifdef __EMSCRIPTEN__
++      const char*base = strrchr(name, '/');
++      base = base ? base + 1 : name;
++      if (!strcmp(base, "system") || !strcmp(base, "system.vpi")) {
++            static bool registered = false;
++            if (!registered) {
++                  registered = true;
++                  vpi_mode_flag = VPI_MODE_REGISTER;
++                  for (unsigned index = 0; vlog_startup_routines[index]; index++)
++                        vlog_startup_routines[index]();
++                  vpi_mode_flag = VPI_MODE_NONE;
++            }
++      } else if (!strcmp(base, "v2005_math") || !strcmp(base, "v2005_math.vpi")) {
++            static bool registered_math = false;
++            if (!registered_math) {
++                  registered_math = true;
++                  vpi_mode_flag = VPI_MODE_REGISTER;
++                  for (unsigned index = 0; icarus_v2005_math_startup[index]; index++)
++                        icarus_v2005_math_startup[index]();
++                  vpi_mode_flag = VPI_MODE_NONE;
++            }
++      } else {
++            fprintf(stderr, "Unsupported VPI module in browser: %s\n", name);
++      }
++      return;
++#endif
+       struct stat sb;
+       int rc;
+       bool export_flag = false;
+--- a/vvp/lib_main.cc
++++ b/vvp/lib_main.cc
+@@ -329,6 +329,38 @@
+       compile_init();
+ }
+ 
++#ifdef __EMSCRIPTEN__
++/*
++ * Browser live sessions (engine/vvp-live.cc): compile the design like
++ * vvp_run() does, but leave scheduling to the caller.
++ */
++int vvp_live_load(const char *design_path)
++{
++      if (vvp_used++ != 1) {
++          if (vvp_used == 1)
++              fprintf(stderr, "vvp_init() has not been called\n");
++          else
++              report_used();
++          return 1;
++      }
++      ++vvp_used;
++
++      int ret_cd = compile_design(design_path);
++      destroy_lexor();
++      print_vpi_call_errors();
++      if (ret_cd) return ret_cd;
++
++      compile_cleanup();
++
++      if (compile_errors > 0) {
++	    vpi_mcd_printf(1, "%s: Program not runnable, %u errors.\n",
++		    design_path, compile_errors);
++	    return compile_errors;
++      }
++      return 0;
++}
++#endif
++
+ int vvp_run(const char *design_path)
+ {
+       struct rusage cycles[3];
+--- a/vvp/schedule.cc
++++ b/vvp/schedule.cc
+@@ -1126,9 +1126,23 @@
+       }
+ }
+ 
+-void schedule_simulate(void)
++#ifdef __EMSCRIPTEN__
++/* Browser hooks implemented in engine/vvp-live.cc. They are weak so the
++   stock vvp link (without vvp-live.o) still succeeds. */
++extern void vvp_live_start_of_sim(void) __attribute__((weak));
++extern void vvp_live_end_of_sim(void) __attribute__((weak));
++#endif
++
++static bool schedule_run_finals = false;
++
++/*
++ * Prepare the simulation: end-of-compile callbacks, initialization
++ * events and start-of-simulation callbacks. schedule_simulate() runs
++ * this, then schedule_sim_run(), then schedule_sim_end(); browser live
++ * sessions call the three phases separately.
++ */
++void schedule_sim_begin(void)
+ {
+-      bool run_finals;
+       sim_started = false;
+ 
+       schedule_time = 0;
+@@ -1165,16 +1179,34 @@
+       // Execute start of simulation callbacks
+       vpiStartOfSim();
+ 
++#ifdef __EMSCRIPTEN__
++      if (vvp_live_start_of_sim) vvp_live_start_of_sim();
++#endif
++
+       signals_capture();
+ 
++      // If there were no compiletf, etc. errors then we are going to
++      // process events and when done run the final blocks.
++      schedule_run_finals = schedule_runnable;
++}
++
++/*
++ * Run the event loop. Unbounded runs continue until the queue is empty
++ * or the simulation finishes. Bounded runs also stop before time would
++ * advance past `limit` (after draining every event at times <= limit,
++ * then advancing the clock to `limit`) or after `max_events` events.
++ * Returns 0 when the queue drained or the simulation finished, 1 when
++ * stopped at the time limit, 2 when the event cap was reached.
++ */
++int schedule_sim_run(bool bounded, vvp_time64_t limit, unsigned long max_events)
++{
++      int reason = 0;
++      unsigned long events = 0;
++
+       if (verbose_flag) {
+ 	    vpi_mcd_printf(1, " ...run scheduler\n");
+       }
+ 
+-      // If there were no compiletf, etc. errors then we are going to
+-      // process events and when done run the final blocks.
+-      run_finals = schedule_runnable;
+-
+       if (schedule_runnable) while (sched_list) {
+ 
+ 	    if (schedule_stopped_flag) {
+@@ -1193,6 +1225,10 @@
+ 	    if (ctim->delay > 0) {
+ 
+ 		  if (!schedule_runnable) break;
++		  if (bounded && schedule_time + ctim->delay > limit) {
++			reason = 1;
++			break;
++		  }
+ 		  schedule_time += ctim->delay;
+ 		    /* When the design is being traced (we are emitting
+ 		     * file/line information) also print any time changes. */
+@@ -1264,10 +1300,31 @@
+ 	    cur->run_run();
+ 
+ 	    delete (cur);
++
++	    if (bounded && max_events && ++events >= max_events) {
++		  reason = 2;
++		  break;
++	    }
+       }
+ 
++	/* A bounded run that reached its time limit (or emptied the
++	   queue) leaves the clock at the limit; pending future events
++	   keep their absolute times. */
++      if (bounded && reason != 2 && schedule_runnable && limit > schedule_time) {
++	    if (sched_list) sched_list->delay -= limit - schedule_time;
++	    schedule_time = limit;
++      }
++
++      return reason;
++}
++
++/*
++ * Run final blocks and end-of-simulation callbacks.
++ */
++void schedule_sim_end(void)
++{
+ 	// Execute final events.
+-      schedule_runnable = run_finals;
++      schedule_runnable = schedule_run_finals;
+       while (schedule_runnable && schedule_final_list) {
+ 	    struct event_s*cur = schedule_final_list->next;
+ 	    if (cur->next == cur) {
+@@ -1279,6 +1336,10 @@
+ 	    delete cur;
+       }
+ 
++#ifdef __EMSCRIPTEN__
++      if (vvp_live_end_of_sim) vvp_live_end_of_sim();
++#endif
++
+       signals_revert();
+ 
+       if (verbose_flag) {
+@@ -1292,6 +1353,13 @@
+ #endif
+ }
+ 
++void schedule_simulate(void)
++{
++      schedule_sim_begin();
++      schedule_sim_run(false, 0, 0);
++      schedule_sim_end();
++}
++
+ #ifdef CHECK_WITH_VALGRIND
+ void schedule_delete(void)
+ {
+--- a/vvp/schedule.h
++++ b/vvp/schedule.h
+@@ -173,6 +173,15 @@
+ extern void schedule_simulate(void);
+ 
+ /*
++ * The phases of schedule_simulate(), for callers that drive the event
++ * loop incrementally (browser live sessions).
++ */
++extern void schedule_sim_begin(void);
++extern int  schedule_sim_run(bool bounded, vvp_time64_t limit,
++                             unsigned long max_events);
++extern void schedule_sim_end(void);
++
++/*
+  * Get the current absolute simulation time. This is not used
+  * internally by the scheduler (which uses time differences instead)
+  * but is used for printouts and stuff.
