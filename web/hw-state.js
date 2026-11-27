@@ -83,9 +83,7 @@ export function installHwState({ store, notify }) {
 
   function renderToolbar(array) {
     $('hw-time').textContent = store.hasTime() ? formatTime(store.currentTime(), S.memTrace?.timescale || S.trace?.timescale) : '—';
-    $('hw-play').setAttribute('aria-pressed', String(S.playing));
-    $('hw-play').textContent = S.playing ? '❚❚' : '▶';
-    $('hw-play').setAttribute('aria-label', S.playing ? 'Pause' : 'Play cycles');
+    renderPlayButton();
     for (const [id, on] of [['hw-abi', prefs.abi], ['hw-disasm', prefs.disasm], ['hw-hide-zeros', prefs.hideZeros]]) $(id).setAttribute('aria-pressed', String(on));
     $('hw-abi').disabled = !array || array.size !== 32;
     $('hw-disasm').disabled = !array || array.width !== 32;
@@ -200,7 +198,14 @@ export function installHwState({ store, notify }) {
     frame = requestAnimationFrame(render);
   }
 
+  function renderPlayButton() {
+    $('hw-play').setAttribute('aria-pressed', String(S.playing));
+    $('hw-play').textContent = S.playing ? '❚❚' : '▶';
+    $('hw-play').setAttribute('aria-label', S.playing ? 'Pause' : 'Play cycles');
+  }
+
   store.subscribe((_, kind) => {
+    if (kind === 'playing') renderPlayButton();
     if (kind === 'mem' || kind === 'cursor' || kind === 'trace' || kind === 'playing') schedule();
   });
   $('hw-step-prev').onclick = () => store.stepCycle(-1);
