@@ -295,6 +295,8 @@
           <div class="schem-toolbar">
             <select id="schem-module" aria-label="Module to elaborate"></select>
             <button id="schem-elaborate" class="chip primary-chip" title="Elaborate to RTL with the Icarus synthesizer and lay out with elkjs">Elaborate</button>
+            <button id="schem-critpath" class="chip" aria-pressed="false">Critical Path</button>
+            <button id="schem-resources" class="chip" aria-pressed="false">Resources</button>
             <button id="schem-flatten" class="chip" aria-pressed="false" title="Flatten the hierarchy before drawing">Flatten</button>
             <nav id="schem-crumbs" class="schem-crumbs" aria-label="Hierarchy"></nav>
             <span class="spacer"></span>
@@ -316,6 +318,8 @@
           <div class="schem-statusbar"><output id="schem-status" class="schem-status">Pick a module and Elaborate. Elaboration runs locally with the same Icarus compiler as simulation.</output><output id="schem-scope" class="schem-scope"></output></div>
           <div id="schem-warnings" class="schem-warnings" aria-label="Elaboration warnings" hidden></div>
           <div id="schem-learn-bar" class="schem-learn-bar" aria-label="Live cycle learning bar" aria-live="polite" hidden></div>
+          <div id="schem-critpath-banner" aria-live="polite" hidden></div>
+          <section id="schem-resources-panel" aria-label="Resource usage" hidden></section>
           <div class="schem-stage">
             <div id="schem-empty" class="empty-state"><div class="empty-icon">⎍</div><h2>No schematic yet</h2><p>Elaborate turns your RTL into registers, muxes, operators and submodules. Click a block to inspect it, double-click to open it; pinch or scroll to zoom.</p></div>
             <svg id="schem-canvas" class="schem-canvas" role="img" aria-label="RTL schematic"></svg>
@@ -470,6 +474,7 @@
       <div class="setting-row"><label for="kb-size">Key row size</label><select id="kb-size"><option value="s">Small</option><option value="m" selected>Medium</option><option value="l">Large</option></select></div>
       <div class="setting-row"><label for="kb-rows">Key row lines</label><select id="kb-rows"><option value="1" selected>One (scrolls sideways)</option><option value="2">Two (all keys visible)</option></select></div>
 
+      <label class="check-label"><input id="opt-strict-lint" type="checkbox" checked><span>Strict RTL lint</span></label>
       <label class="check-label"><input id="live-lint" type="checkbox" checked><span>Live lint</span></label>
       <label class="check-label"><input id="inline-values" type="checkbox" checked><span>Inline waveform values</span></label>
       <div class="set-sec">Simulation</div>

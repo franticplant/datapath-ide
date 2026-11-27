@@ -1,3 +1,4 @@
+import { lintRtl } from './rtl-linter.js';
 import { buildModuleHierarchy } from './hierarchy.js';
 import { computeInlineValues } from './inline-values.js';
 import { formatVerilog } from './verilog-format.js';
@@ -37,6 +38,8 @@ const $ = id => document.getElementById(id);
 let files = Object.assign(Object.create(null), defaults);
 let current = 'design.v';
 let diagnostics = [];
+let icarusDiagnostics = [];
+let lastElaboratedJson = null, elaboratedFiles = null, elaboratedSources = null;
 let lintSeq = 0, lintTimer = null, lintWorker = null, inlineTimer;
 let outputOpened = false;
 let simulationSettings = null;
@@ -324,7 +327,7 @@ const groups = new EditorGroups($('editor-groups'), {
   }),
   hasFile: path => Object.hasOwn(files, path),
   getFile: path => files[path],
-  getDiagnostics: () => diagnostics,
+  getDiagnostics: () => editorDiagnostics(diagnostics),
   onChange: (name, text) => {
     dismissFeatured();
     files[name] = text;
@@ -402,6 +405,7 @@ function openFile(name) {
 function toggleBuildFile(path, include) {
   if (include) excluded.delete(path);
   else excluded.add(path);
+  refreshRtlProblems();
   suggestModules();
   render();
   save();
@@ -412,7 +416,7 @@ function render() {
   renderExplorerSection();
   renderHierarchy();
   groups.refresh();
-  groups.setDiagnosticsAll(diagnostics);
+  groups.setDiagnosticsAll(editorDiagnostics(diagnostics));
   simulationSettings?.render();
   if (!$('tests').hidden) testRunner?.render();
 }
@@ -867,6 +871,8 @@ function loadShowcaseProject(id, { silent = false } = {}) {
   collapsed = new Set();
   current = Object.hasOwn(files, project.openFile) ? project.openFile : Object.keys(files)[0];
   diagnostics = [];
+  icarusDiagnostics = [];
+  lastElaboratedJson = null;
   renderProblems([]);
   consoleOverride = null;
   waveform.clearVcd();
@@ -896,6 +902,8 @@ function resetCleanWorkspace() {
   collapsed = new Set();
   current = 'design.v';
   diagnostics = [];
+  icarusDiagnostics = [];
+  lastElaboratedJson = null;
   renderProblems([]);
   consoleOverride = null;
   waveform.clearVcd();
@@ -1214,6 +1222,7 @@ fitViewport();
 simulationSettings = installSimSettings(() => files, () => excluded, (path, isExcluded) => {
   if (isExcluded) excluded.add(path);
   else excluded.delete(path);
+  refreshRtlProblems();
   suggestModules();
   render();
   save();
@@ -1278,8 +1287,10 @@ function jumpToLine(file, line) {
   renderExplorerSection();
 }
 
+function editorDiagnostics(items) { return items.map(item => item.rule ? { ...item, message: `[${item.rule}] ${item.message}${item.hint ? ` — ${item.hint}` : ''}` } : item); }
+
 function renderProblems(items, summary = '') {
-  groups.setDiagnosticsAll(items);
+  groups.setDiagnosticsAll(editorDiagnostics(items));
   updateHint();
   const tab = document.querySelector('[data-panel="problems"]');
   tab.textContent = items.length ? `Problems (${items.length})` : 'Problems';
@@ -1313,9 +1324,12 @@ function renderProblems(items, summary = '') {
     const loc = document.createElement('span');
     loc.className = 'problem-loc';
     loc.textContent = `${item.file}:${item.line}`;
-    const msg = document.createElement('span');
-    msg.textContent = item.message;
-    btn.append(sev, loc, msg);
+    const detail = document.createElement('span');
+    detail.className = 'problem-detail';
+    if (item.rule) { const rule = document.createElement('span'); rule.className = 'problem-rule'; rule.textContent = `[${item.rule}]`; detail.append(rule, ' '); }
+    const msg = document.createElement('span'); msg.textContent = item.message; detail.append(msg);
+    if (item.hint) { const hint = document.createElement('small'); hint.className = 'problem-hint'; hint.textContent = item.hint; detail.append(hint); }
+    btn.append(sev, loc, detail);
     btn.onclick = () => jumpToLine(item.file, item.line);
     list.append(btn);
   }
@@ -1342,8 +1356,8 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
   } else if (event.type === 'status') {
     engineStatus(`${event.phase}…`, 'st-running');
   } else if (event.type === 'diagnostics') {
-    diagnostics = event.items || [];
-    renderProblems(diagnostics);
+    icarusDiagnostics = event.items || [];
+    refreshRtlProblems();
   } else if (event.type === 'output') {
     consoleOverride = null;
     log.append(event.chunk);
@@ -1432,8 +1446,8 @@ function execute(type, { suppressAutoWave = false, quiet = false } = {}) {
   else if (log.text) log.append('\n--- Run ---\n');
   showConsole();
   waveform.clearVcd();
-  diagnostics = [];
-  renderProblems([]);
+  icarusDiagnostics = [];
+  refreshRtlProblems();
   suppressNextAutoWave = suppressAutoWave;
   setBusy(true);
   engineStatus('Starting…', 'st-running');
@@ -1581,6 +1595,7 @@ function assemblePaths(paths) {
 // Shows assembler errors in Problems and the editor; returns false when there were any.
 function reportAssembly(outcome, context) {
   if (outcome.ok) return true;
+  icarusDiagnostics = outcome.diagnostics;
   diagnostics = outcome.diagnostics;
   renderProblems(diagnostics, `${context}: ${outcome.diagnostics.length} assembler error${outcome.diagnostics.length === 1 ? '' : 's'}`);
   showPanel('problems');
@@ -1602,6 +1617,7 @@ function assembleCommand() {
   if (!paths.length) { showToast('No .asm or .s files to assemble'); return; }
   const outcome = assemblePaths(paths);
   if (!reportAssembly(outcome, 'Assemble')) return;
+  icarusDiagnostics = [];
   diagnostics = [];
   renderProblems([]);
   const words = outcome.results.reduce((sum, result) => sum + result.words.length, 0);
@@ -1710,6 +1726,12 @@ schematic = installSchematic({
   getStateName: (path, bits) => (fsmMap ? stateNameFor(fsmMap, path, bits) : null),
   onShowArray: path => { showPanel('hw-state'); hwState.select(path); },
   onProgress: phase => tour?.setBusyText(phase),
+  onElaborated: ({ yosysJson, files: sourceFiles, sourceFiles: included }) => {
+    lastElaboratedJson = yosysJson;
+    elaboratedFiles = sourceFiles;
+    elaboratedSources = included;
+    refreshRtlProblems();
+  },
 });
 
 // ---------------------------------------------------------------- Back / Forward history
@@ -1841,19 +1863,46 @@ else if (deepLink?.kind === 'showcase') tour.launchShowcaseLive(deepLink.id);
 else if (!hadSavedWorkspace && localStorage.getItem(FEATURED_DISMISSED_KEY) !== '1') tour.showFeatured();
 
 // Background compiler uses its own worker so it never changes foreground output or run state.
+// Only use synthesized findings while the elaborated source snapshot is still current.
+function matchingElaboration() {
+  if (!lastElaboratedJson || !elaboratedFiles || !elaboratedSources) return null;
+  if (Object.keys(files).length !== Object.keys(elaboratedFiles).length || Object.keys(files).some(path => files[path] !== elaboratedFiles[path])) return null;
+  let included;
+  try { included = liveSources().map(([path]) => path); } catch { return null; }
+  return JSON.stringify(included) === JSON.stringify(elaboratedSources) ? lastElaboratedJson : null;
+}
+function refreshRtlProblems() {
+  const findings = layout.getState().strictRtlLint ? lintRtl(files, { excluded, yosysJson: matchingElaboration() }) : [];
+  const merged = [...icarusDiagnostics];
+  const keys = new Set(merged.map(item => `${item.file}:${item.line}:${String(item.message || '').trim().toLowerCase()}`));
+  const latchLines = new Set(merged.filter(item => /latch.*infer|infer.*latch/i.test(item.message || '')).map(item => `${item.file}:${item.line}`));
+  for (const item of findings) {
+    const loc = `${item.file}:${item.line}`;
+    const key = `${loc}:${String(item.message || '').trim().toLowerCase()}`;
+    if (keys.has(key) || (item.rule === 'LATCH_INFERRED' && latchLines.has(loc))) continue;
+    keys.add(key); if (item.rule === 'LATCH_INFERRED') latchLines.add(loc);
+    merged.push(item);
+  }
+  diagnostics = merged;
+  renderProblems(diagnostics);
+}
+$('opt-strict-lint').addEventListener('change', refreshRtlProblems);
 function cancelLint() { ++lintSeq; clearTimeout(lintTimer); lintWorker?.terminate(); lintWorker = null; }
 function scheduleLint(name) {
   cancelLint();
-  if (!/\.(?:v|sv)$/i.test(name) || !layout.getState().liveLint) return;
+  if (!/\.(?:v|sv)$/i.test(name)) return;
   const seq = lintSeq;
   lintTimer = setTimeout(() => {
-    if (engine.activeRunId !== null || board?.isLive() || !layout.getState().liveLint) return;
+    if (engine.activeRunId !== null || board?.isLive()) return;
+    // Strict RTL analysis is independent of the optional Icarus background worker.
+    refreshRtlProblems();
+    if (!layout.getState().liveLint) return;
     let settings;
     try { settings = simulationSettings.snapshot(); } catch { return; }
     lintWorker = new Worker('./simulator-worker.js', { type: 'module' });
     lintWorker.onmessage = ({ data }) => {
       if (data.type !== 'lint-result') return;
-      if (seq === lintSeq && engine.activeRunId === null && !board?.isLive() && layout.getState().liveLint) { diagnostics = data.items; renderProblems(diagnostics); }
+      if (seq === lintSeq && engine.activeRunId === null && !board?.isLive() && layout.getState().liveLint) { icarusDiagnostics = data.items || []; refreshRtlProblems(); }
       lintWorker?.terminate(); lintWorker = null;
     };
     lintWorker.postMessage({ type: 'lint', runId: seq, files: { ...files }, ...settings, topModule: $('top-module').value, standard: $('standard').value });

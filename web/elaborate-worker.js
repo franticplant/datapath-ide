@@ -3,6 +3,8 @@
 // and the json.tgt target (engine/tgt-json.cc) writes Yosys-style JSON; elkjs lays it out.
 // Everything loads from local URLs (./engine/, ./vendor/schematic/).
 
+import { analyzeResources, analyzeCriticalPath } from './rtl-metrics.js';
+
 let elk = null;            // ELK instance
 let elkPromise = null;     // in-flight loader so warm() + elaborate() share one load
 let cache = null;          // { yosysJson, topModule }
@@ -409,14 +411,14 @@ if (typeof WorkerGlobalScope !== 'undefined') self.addEventListener('message', a
       const design = data.flatten ? flattenModule(result.yosysJson, data.topModule) : result.yosysJson;
       cache = { yosysJson: design, topModule: data.topModule };
       const graph = await layoutGraph(moduleGraph(design, data.topModule));
-      const reply = { type: 'elaborated', topModule: data.topModule, modules: moduleList(design), yosysJson: design, graph, diagnostics: result.diagnostics };
+      const reply = { type: 'elaborated', topModule: data.topModule, modules: moduleList(design), yosysJson: design, graph, diagnostics: result.diagnostics, resources: analyzeResources(design, data.topModule), criticalPath: analyzeCriticalPath(design, data.topModule) };
       cachedKey = key;
       cachedReply = reply;
       self.postMessage({ ...reply, requestId, elapsedMs: Math.round(performance.now() - started) });
     } else if (data.type === 'layout') {
       if (!cache) throw new Error('Elaborate the design first.');
       const graph = await layoutGraph(moduleGraph(cache.yosysJson, data.moduleName));
-      self.postMessage({ type: 'laid-out', requestId, moduleName: data.moduleName, graph, elapsedMs: Math.round(performance.now() - started) });
+      self.postMessage({ type: 'laid-out', requestId, moduleName: data.moduleName, graph, criticalPath: analyzeCriticalPath(cache.yosysJson, data.moduleName), elapsedMs: Math.round(performance.now() - started) });
     }
   } catch (error) {
     self.postMessage({ type: 'error', requestId, message: error?.message || String(error) });

@@ -170,6 +170,10 @@ const box = async loc => {
     featurePage.on('pageerror', e => report.errors.push(e.message));
     await featurePage.goto(baseUrl);
     await featurePage.waitForFunction(() => !document.getElementById('run').disabled);
+    // Stage B's diagnostic clearing check is for the compiler alone.
+    await featurePage.locator('#preferences').click();
+    await featurePage.locator('#opt-strict-lint').uncheck();
+    await featurePage.getByRole('button', { name: 'Done' }).click();
     await featurePage.locator('#sidebar-hierarchy').click();
     await featurePage.locator('#hierarchy-tree button').filter({ hasText: 'dut : counter' }).click();
     assert.match(await featurePage.locator('#active-file').textContent(), /testbench\.v/);
@@ -199,8 +203,47 @@ const box = async loc => {
     await featurePage.locator('.wave-group button').click();
     await featurePage.locator('#wave-views').selectOption('Audit view');
     assert.ok(await featurePage.locator('.wave-row[data-path="testbench.count[3:1]"]').isVisible());
+    await featurePage.locator('#sidebar-hierarchy').click();
+    await snap(featurePage, '08-stage-b-ide.png');
     await featurePage.locator('#wave-delete-view').click();
     report.stageB = { hierarchy: 'passed', liveLint: 'passed', inlineValues: 'passed', formatter: 'passed', waveformViews: 'passed' };
+
+    // Strict RTL lint should update Problems while typing without running simulation.
+    await featurePage.locator('#preferences').click();
+    await featurePage.locator('#opt-strict-lint').check();
+    await featurePage.getByRole('button', { name: 'Done' }).click();
+    await editor.click(); await featurePage.keyboard.press('Control+A');
+    await featurePage.keyboard.insertText('module testbench(input clk, input d, output reg q);\nalways @(posedge clk) begin\n  q = d;\nend\nendmodule\n');
+    await featurePage.waitForFunction(() => [...document.querySelectorAll('#problems .problem-rule')].some(el => el.textContent === '[BLKSEQ]'), null, { timeout: 30000 });
+    await featurePage.locator('[data-panel="problems"]').click();
+    assert.ok(await featurePage.locator('#problems .problem-rule').filter({ hasText: '[BLKSEQ]' }).isVisible());
+    await snap(featurePage, '11-stage-c-lint.png');
+
+    // The tour's MIPS CPU has already been elaborated in the schematic.
+    if (await page.locator('#schem-inspector').isVisible()) await page.getByRole('button', { name: 'Close inspector' }).click();
+    await page.locator('#schem-resources').click();
+    await page.waitForSelector('#schem-resources-panel:not([hidden]) .schem-resource-badge');
+    const totals = await page.locator('#schem-resources-panel .schem-resource-badge').allTextContents();
+    for (const name of ['FF bits', 'Muxes', 'Ops', 'Memory']) {
+      const badge = totals.find(text => text.startsWith(`${name}:`));
+      assert.ok(badge && Number(badge.split(':')[1]) > 0, `${name}: expected non-zero resources (${totals.join(', ')})`);
+    }
+    await page.locator('#schem-critpath').click();
+    await page.waitForSelector('#schem-critpath-banner:not([hidden])');
+    assert.match(await page.locator('#schem-critpath-banner').textContent(), /Depth [1-9]/);
+    assert.ok(await page.locator('.schem-cell.is-critpath').count() > 0);
+    for (const [name, viewport] of [['stageCLaptop', { width: 1280, height: 720 }], ['stageCPhone', { width: 412, height: 915 }]]) {
+      await page.setViewportSize(viewport);
+      const dimensions = await metrics(page);
+      assert.equal(dimensions.overflowX, false, `${name}: horizontal overflow`);
+      assert.equal(dimensions.topbarWrapped, false, `${name}: wrapped topbar`);
+      assert.equal(await page.locator('#schem-resources-panel').isVisible(), true);
+      assert.equal(await page.locator('#schem-critpath-banner').isVisible(), true);
+      assert.ok(dimensions.schemCanvas.height >= 150, `${name}: schematic canvas is too short`);
+      report.scenarios[name] = dimensions;
+      await snap(page, name === 'stageCLaptop' ? '09-stage-c-resources-critpath.png' : '10-stage-c-phone.png');
+    }
+    report.stageC = { strictLint: 'passed', resources: totals, criticalPath: 'passed', responsive: 'passed' };
     assert.deepEqual(report.errors, []);
     await featurePage.close();
     console.log(JSON.stringify(report, null, 2));

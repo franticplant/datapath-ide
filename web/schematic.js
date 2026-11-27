@@ -93,7 +93,7 @@ function wirePath(points) {
 
 // onNavigate: the drill-down path changed (history entry); overlay: { opened, closed } for the inspector card;
 // getStateName(path, bits): FSM state name or null; onShowArray(path): open the State tab on a captured array.
-export function installSchematic({ store, getFiles, getRtlSources, getSettings, getStandard, getTopHint, createWorker, onJump, notify, onNavigate = null, overlay = null, getStateName = null, onShowArray = null, onProgress = null }) {
+export function installSchematic({ store, getFiles, getRtlSources, getSettings, getStandard, getTopHint, createWorker, onJump, notify, onNavigate = null, overlay = null, getStateName = null, onShowArray = null, onProgress = null, onElaborated = null }) {
   const $ = id => document.getElementById(id);
   const S = store.getState();
   const panel = $('schematic');
@@ -103,6 +103,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
   const pending = new Map();
   let design = null;        // { topModule, modules, flatten }
   let graph = null;         // laid-out graph currently shown
+  let lastResources = null, lastCriticalPath = null;
+  let criticalEnabled = false, resourcesEnabled = false;
   let crumbs = [];          // [{ label, module }]
   let diagnostics = [];
   let view = null;          // { x, y, w, h } viewBox
@@ -689,6 +691,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     try {
       const reply = await request('layout', { moduleName: target.module });
       crumbs = crumbs.slice(0, index + 1);
+      lastCriticalPath = reply.criticalPath || null;
       showGraph(reply.graph);
       if (!silent) onNavigate?.();
       return true;
@@ -706,6 +709,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     try {
       const reply = await request('layout', { moduleName: node.type });
       crumbs.push({ label: node.instance || node.name, module: node.type });
+      lastCriticalPath = reply.criticalPath || null;
       showGraph(reply.graph);
       setStatus(`${node.instance} : ${shortType(node)} · ${reply.elapsedMs} ms layout`);
       if (!silent) onNavigate?.();
@@ -742,6 +746,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     draw();
     fit();
     renderMinimap();
+    renderCriticalPath();
+    renderResources();
     resetSearch();
   }
 
@@ -816,6 +822,7 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     canvas.append(wires, hits, cells, labels);
     applySelection();
     applyOverlay();
+    applyCriticalPath();
   }
 
   // ------------------------------------------------ live VCD overlay
@@ -1049,8 +1056,9 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     $('schem-elaborate').disabled = true;
     setStatus(worker ? `Elaborating ${topModule}…` : `Loading the elaboration engine, then elaborating ${topModule}…`);
     try {
+      const fileSnapshot = { ...getFiles() };
       const reply = await request('elaborate', {
-        files: { ...getFiles() }, sourceFiles: sources.map(([path]) => path), topModule, standard: getStandard(),
+        files: fileSnapshot, sourceFiles: sources.map(([path]) => path), topModule, standard: getStandard(),
         defines: settings.defines, includeDirs: settings.includeDirs, flatten,
       });
       diagnostics = reply.diagnostics || [];
@@ -1059,7 +1067,10 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
         setStatus(`Elaboration failed${diagnostics[0] ? `: ${diagnostics[0].message}` : ''}`, true);
         return;
       }
-      design = { topModule, modules: reply.modules, flatten };
+      design = { topModule, modules: reply.modules, yosysJson: reply.yosysJson, flatten };
+      lastResources = reply.resources || null;
+      lastCriticalPath = reply.criticalPath || null;
+      onElaborated?.({ yosysJson: reply.yosysJson, resources: lastResources, criticalPath: lastCriticalPath, files: fileSnapshot, sourceFiles: sources.map(([path]) => path) });
       crumbs = [{ label: topModule, module: topModule }];
       scopeCache.clear();
       showGraph(reply.graph);
@@ -1078,6 +1089,86 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     if (kind === 'trace') scopeCache.clear();
     if (kind === 'cursor' || kind === 'trace' || kind === 'playing') schedule();
   });
+  // Highlight graph elements by their cell keys and numeric net bits, not displayed net names.
+  function applyCriticalPath() {
+    const cells = new Set(lastCriticalPath?.hasCombLoop ? lastCriticalPath.loopCells || [] : lastCriticalPath?.cells || []);
+    const nets = new Set((lastCriticalPath?.nets || []).filter(bit => typeof bit === 'number'));
+    for (const node of graph?.nodes || []) nodeEls.get(node.id)?.classList.toggle('is-critpath', criticalEnabled && node.id.startsWith('cell:') && cells.has(node.name));
+    for (const edge of graph?.edges || []) wireEls.get(edge.id)?.classList.toggle('is-critpath', criticalEnabled && edge.bits?.some(bit => typeof bit === 'number' && nets.has(bit)));
+  }
+  const pointLabel = value => value == null ? '—' : typeof value === 'object' ? (value.name || value.cell || value.port || JSON.stringify(value)) : String(value);
+  function renderCriticalPath() {
+    const host = $('schem-critpath-banner');
+    host.hidden = !criticalEnabled;
+    host.replaceChildren();
+    if (!criticalEnabled) { applyCriticalPath(); return; }
+    const path = lastCriticalPath;
+    if (!path) { host.textContent = 'Elaborate a module to inspect its critical path.'; applyCriticalPath(); return; }
+    const summary = document.createElement('strong');
+    summary.textContent = path.hasCombLoop ? `Combinational loop detected (${(path.loopCells || []).length} cells)` : `Depth ${path.depth} · ${path.gateCount} stages · ${pointLabel(path.startpoint)} → ${pointLabel(path.endpoint)}`;
+    host.append(summary);
+    const steps = document.createElement('div'); steps.className = 'schem-critical-steps';
+    const items = path.hasCombLoop ? (path.loopCells || []).map(cell => ({ cell, type: 'loop' })) : path.steps || [];
+    for (const step of items) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'chip';
+      button.textContent = `${step.cell} (${step.type})${step.cumDepth != null ? ` · ${step.cumDepth}` : ''}`;
+      const id = `cell:${step.cell}`; button.disabled = !index?.nodes.has(id);
+      button.onclick = () => { fittedToCanvas = false; focusMatch({ kind: 'node', id }); };
+      steps.append(button);
+    }
+    host.append(steps); applyCriticalPath();
+  }
+
+  // Follow the first real instance path from the top to a module in the resource table.
+  async function openResourceModule(name) {
+    const modules = design?.yosysJson?.modules || {};
+    const top = design?.topModule;
+    if (!top || !modules[name]) return;
+    const queue = [{ module: top, labels: [top], seen: new Set([top]) }];
+    let target = null;
+    while (queue.length) {
+      const item = queue.shift();
+      if (item.module === name) { target = item.labels; break; }
+      for (const [instance, cell] of Object.entries(modules[item.module]?.cells || {})) {
+        if (!modules[cell.type] || item.seen.has(cell.type)) continue;
+        queue.push({ module: cell.type, labels: [...item.labels, instance], seen: new Set([...item.seen, cell.type]) });
+      }
+    }
+    if (target && await navigateTo(target)) { onNavigate?.(); return; }
+    if (busy) return;
+    busy = true;
+    try {
+      const reply = await request('layout', { moduleName: name });
+      crumbs = [{ label: name, module: name }]; lastCriticalPath = reply.criticalPath || null;
+      showGraph(reply.graph); onNavigate?.();
+    } catch (error) { setStatus(error.message, true); } finally { busy = false; }
+  }
+  function renderResources() {
+    const host = $('schem-resources-panel'); host.hidden = !resourcesEnabled; host.replaceChildren();
+    if (!resourcesEnabled) return;
+    if (!lastResources) { host.textContent = 'Elaborate a module to see resource usage.'; return; }
+    const total = lastResources.total || {};
+    const badges = document.createElement('div'); badges.className = 'schem-resource-badges';
+    for (const [label, value] of [['FF bits', total.ffBits], ['Latches', total.latchBits], ['Muxes', total.muxes], ['Ops', total.ops], ['Gates', total.gates], ['Memory', total.memBits], ['Behavioral', total.behavioral]]) {
+      const badge = document.createElement('span'); badge.className = 'schem-resource-badge'; badge.textContent = `${label}: ${value ?? 0}`; badges.append(badge);
+    }
+    const table = document.createElement('table'); table.className = 'schem-resource-table';
+    const head = document.createElement('thead'); const header = document.createElement('tr');
+    for (const label of ['Module', 'Instances', 'FFs', 'Muxes', 'Ops', 'Mem']) { const th = document.createElement('th'); th.textContent = label; header.append(th); }
+    head.append(header); table.append(head);
+    const body = document.createElement('tbody');
+    for (const module of lastResources.byModule || []) {
+      const row = document.createElement('tr'); const nameCell = document.createElement('td');
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = module.name; button.onclick = () => openResourceModule(module.name);
+      nameCell.append(button); row.append(nameCell);
+      const self = module.self || {};
+      for (const value of [module.instanceCount, self.ffBits, self.muxes, self.ops, self.memBits]) { const td = document.createElement('td'); td.textContent = String(value ?? 0); row.append(td); }
+      body.append(row);
+    }
+    table.append(body); host.append(badges, table);
+  }
+  $('schem-critpath').onclick = () => { criticalEnabled = !criticalEnabled; $('schem-critpath').setAttribute('aria-pressed', String(criticalEnabled)); renderCriticalPath(); };
+  $('schem-resources').onclick = () => { resourcesEnabled = !resourcesEnabled; $('schem-resources').setAttribute('aria-pressed', String(resourcesEnabled)); renderResources(); };
   $('schem-elaborate').onclick = elaborate;
   $('schem-flatten').onclick = () => {
     flatten = !flatten;

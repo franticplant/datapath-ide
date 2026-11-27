@@ -1365,3 +1365,27 @@ body.is-zen .featured-hero, body.is-zen .tour-rail { display: none !important; }
 .sidebar > .side-head { min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .sidebar > .side-head::-webkit-scrollbar { display: none; }
 .sidebar > .side-head > button { flex: none; }
+
+/* Strict lint and synthesis insights share the workspace's theme colors. */
+.problem-detail { min-width: 0; overflow-wrap: anywhere; }
+.problem-rule { display: inline-block; color: var(--warning); background: color-mix(in srgb, var(--warning) 13%, transparent); border-radius: 4px; padding: 0 4px; font-size: 11px; font-weight: 700; }
+.problem-hint { display: block; color: var(--muted); font: 11.5px/1.4 var(--sans); margin-top: 2px; }
+#schem-critpath[aria-pressed="true"], #schem-resources[aria-pressed="true"] { color: var(--primary); border-color: var(--primary); background: color-mix(in srgb, var(--primary) 15%, var(--chip)); }
+.schem-cell.is-critpath .schem-shape { stroke: var(--warning) !important; stroke-width: 3 !important; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--warning) 65%, transparent)); }
+.schem-wire.is-critpath { stroke: var(--warning) !important; stroke-width: 3.5 !important; }
+.schem-canvas.has-focus .schem-cell.is-critpath, .schem-canvas.has-focus .schem-wire.is-critpath { opacity: 1; }
+#schem-critpath-banner, #schem-resources-panel { flex: none; min-width: 0; max-height: min(18vh, 128px); overflow: auto; padding: 7px 9px; border: 1px solid var(--hair); border-radius: 7px; color: var(--text); background: var(--panel); font-size: 12px; }
+#schem-critpath-banner strong { color: var(--warning); overflow-wrap: anywhere; }
+.schem-critical-steps, .schem-resource-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.schem-critical-steps { flex-wrap: nowrap; overflow-x: auto; }
+.schem-critical-steps .chip { flex: none; white-space: nowrap; }
+.schem-resource-badge { padding: 2px 6px; border-radius: 5px; background: var(--chip); white-space: nowrap; }
+.schem-resource-table { width: 100%; border-collapse: collapse; margin-top: 6px; text-align: left; font-size: 11px; }
+.schem-resource-table th, .schem-resource-table td { padding: 3px 5px; border-bottom: 1px solid var(--hair); }
+.schem-resource-table td:first-child { overflow-wrap: anywhere; }
+.schem-resource-table button { color: var(--primary); padding: 0; text-align: left; background: none; border: 0; cursor: pointer; }
+@media (max-width: 900px) {
+  #schem-critpath-banner, #schem-resources-panel { max-height: 15vh; }
+  .schem-resource-table { font-size: 10px; }
+  .schem-resource-table th, .schem-resource-table td { padding: 3px 2px; }
+}

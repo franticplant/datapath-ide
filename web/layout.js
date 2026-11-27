@@ -27,6 +27,7 @@ const defaults = () => ({
   kbSize: 'm',
   kbRows: 1,
   liveLint: true,
+  strictRtlLint: true,
   inlineValues: true,
   autoSwitchWave: true,
   autoClearConsole: true,
@@ -119,7 +120,7 @@ export function installLayout(groups, onLayoutChange = null) {
     state.kbRows = Number(state.kbRows) === 2 ? 2 : 1;
 
     for (const flag of ['wrap', 'emacs', 'explorerHidden', 'inspectorHidden', 'dockHidden', 'zen']) state[flag] = state[flag] === true;
-    for (const flag of ['showLineNumbers', 'showFoldGutter', 'showActiveLine', 'showStatusBar', 'keybarOn', 'liveLint', 'inlineValues', 'autoSwitchWave', 'autoClearConsole', 'autoScrollConsole']) {
+    for (const flag of ['showLineNumbers', 'showFoldGutter', 'showActiveLine', 'showStatusBar', 'keybarOn', 'liveLint', 'strictRtlLint', 'inlineValues', 'autoSwitchWave', 'autoClearConsole', 'autoScrollConsole']) {
       state[flag] = state[flag] !== false;
     }
     state.mode = ['edit', 'run', 'wave', 'zen', 'custom'].includes(state.mode) ? state.mode : 'custom';
@@ -186,6 +187,7 @@ export function installLayout(groups, onLayoutChange = null) {
     if ($('keybar-on')) $('keybar-on').checked = state.keybarOn;
     if ($('kb-size')) $('kb-size').value = state.kbSize;
     if ($('kb-rows')) $('kb-rows').value = String(state.kbRows);
+    $('opt-strict-lint').checked = state.strictRtlLint;
     $('live-lint').checked = state.liveLint;
     $('inline-values').checked = state.inlineValues;
     $('auto-switch-wave').checked = state.autoSwitchWave;
@@ -286,6 +288,7 @@ export function installLayout(groups, onLayoutChange = null) {
     ['show-status-bar', 'showStatusBar'],
     ['keybar-on', 'keybarOn'],
     ['live-lint', 'liveLint'],
+    ['opt-strict-lint', 'strictRtlLint'],
     ['inline-values', 'inlineValues'],
     ['auto-switch-wave', 'autoSwitchWave'],
     ['auto-clear-console', 'autoClearConsole'],
