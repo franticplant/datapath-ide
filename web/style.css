@@ -223,8 +223,8 @@ body.st-error .pill { color: var(--error); }
   letter-spacing: .1em;
   text-transform: uppercase;
 }
-.side-head .icon-btn { width: 25px; height: 25px; }
-.side-head .icon-btn svg { width: 14px; height: 14px; }
+.side-actions .icon-btn { width: 25px; height: 25px; }
+.side-actions .icon-btn svg { width: 14px; height: 14px; }
 
 .tree { flex: 1; min-height: 0; padding: 2px 6px 10px; }
 #files.is-dragover, #files .tree-folder.is-dragover {
@@ -493,8 +493,7 @@ body.st-error .pill { color: var(--error); }
 
 /* ------------------------------------------------------------------ waveform */
 #waveform:not([hidden]) { display: flex; flex-direction: column; overflow: hidden; padding: 8px 12px; gap: 6px; }
-.wave-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
-.wave-toolbar::-webkit-scrollbar { display: none; }
+.wave-toolbar { display: flex; align-items: center; justify-content: flex-start; gap: 4px 6px; flex-wrap: wrap; overflow-x: visible; min-width: 0; flex-shrink: 0; }
 .wave-toolbar > * { flex: none; }
 .wave-toolbar label, .wave-toolbar output { color: var(--muted); font-size: 12px; }
 .wave-toolbar select { background: var(--chip); color: var(--text); border: 0; border-radius: var(--radius); padding: 4px 8px; font-size: 12px; }
@@ -974,8 +973,7 @@ dialog.sheet-dialog { margin: auto auto 0 auto; border-radius: 16px 16px 0 0; ma
 
 /* ------------------------------------------------------------------ RTL schematic */
 #schematic:not([hidden]) { display: flex; flex-direction: column; gap: 6px; overflow: hidden; padding: 6px 12px; }
-.schem-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
-.schem-toolbar::-webkit-scrollbar { display: none; }
+.schem-toolbar { display: flex; align-items: center; justify-content: flex-start; gap: 4px 6px; flex-wrap: wrap; overflow-x: visible; min-width: 0; flex-shrink: 0; }
 .schem-toolbar > * { flex: none; }
 .schem-toolbar select { background: var(--chip); color: var(--text); border: 0; border-radius: var(--radius); padding: 4px 8px; font: 12px var(--mono); max-width: 200px; }
 .schem-zoom { display: inline-flex; gap: 4px; }
@@ -1360,11 +1358,18 @@ body.is-zen .featured-hero, body.is-zen .tour-rail { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .featured-hero, .tour-rail, .panel-body:not([hidden]), .tour-copy.is-swapping, .tour-spot { animation: none !important; transition: none !important; }
 }
-.cm-inline-val { margin-left: 1.2em; padding: 1px 5px; border-radius: 4px; color: var(--muted); background: var(--surface-2, #3334); font: 0.85em monospace; user-select: none; }
+.cm-inline-val { margin-left: 10px; padding: 0 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 9%, transparent); border: 1px solid color-mix(in srgb, var(--border, var(--hair)) 75%, transparent); color: var(--muted); font: 0.84em var(--mono); user-select: none; }
 .hierarchy-item { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: inherit; padding: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar > .side-head { min-width: 0; overflow-x: auto; scrollbar-width: none; }
-.sidebar > .side-head::-webkit-scrollbar { display: none; }
-.sidebar > .side-head > button { flex: none; }
+.sidebar > .side-head { min-width: 0; padding: 6px 8px 3px; }
+.side-switch { display: flex; width: 100%; padding: 2px; border-radius: 8px; background: var(--chip); }
+.side-switch .chip { flex: 1; justify-content: center; padding: 4px; }
+.side-actions { display: flex; justify-content: space-evenly; align-items: center; padding: 2px 6px 4px; min-width: 0; }
+.side-actions .icon-btn { flex: 0 1 25px; min-width: 0; }
+.schem-toolbar .chip, .wave-toolbar .chip { padding: 3px 7px; }
+.schem-toolbar .spacer { display: none; }
+.schem-toolbar > *, .wave-toolbar > * { max-width: 100%; }
+.schem-crumbs { max-width: 100%; overflow-x: auto; }
+#wave-cursor { white-space: normal; overflow-wrap: anywhere; }
 
 /* Strict lint and synthesis insights share the workspace's theme colors. */
 .problem-detail { min-width: 0; overflow-wrap: anywhere; }

@@ -262,7 +262,8 @@ function buildGraph(mod, resolve, summaryOf) {
     const pins = Object.keys(conns);
     const inputs = pins.filter(p => directionOf(cell, p) !== 'output');
     const outputs = pins.filter(p => directionOf(cell, p) !== 'input');
-    const label = pin => `${key} (${pin})`;
+    const pointName = boundaryName(mod, key, cell);
+    const label = pin => `${pointName} (${pin})`;
     const sequential = () => {
       for (const p of outputs) addStart(conns[p], label(p));
       for (const p of inputs) if (!/^C(LK)?$/.test(p)) addEnd(conns[p], label(p));
@@ -513,7 +514,7 @@ export function analyzeCriticalPath(yosysJson, moduleName) {
   result.steps = chain.map(a => {
     cum += a.weight;
     const cell = mod.cells[a.cell];
-    return { cell: a.cell, type: a.type, weight: round(a.weight), cumDepth: round(cum), src: typeof cell?.attributes?.src === 'string' && cell.attributes.src ? cell.attributes.src : null };
+    return { cell: a.cell, type: a.type, label: stepLabel(mod, a.cell, cell, resolve), weight: round(a.weight), cumDepth: round(cum), src: typeof cell?.attributes?.src === 'string' && cell.attributes.src ? cell.attributes.src : null };
   });
   result.cells = [];
   for (const s of result.steps) if (result.cells[result.cells.length - 1] !== s.cell) result.cells.push(s.cell);
@@ -525,7 +526,69 @@ export function analyzeCriticalPath(yosysJson, moduleName) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Human-readable names. Cell keys stay raw (the schematic highlights by key); labels never expose
+// Icarus internals such as `$dff$mips_cpu.v:26$_ivl_67`.
+
+const isCleanName = name => typeof name === 'string' && name !== '' && !name.includes('$') && !/(?:^|[._])_?ivl_/.test(name);
+
+// Best user-visible net name for a group of bits: covers them all, exact width, not a port alias, short.
+function netnameFor(mod, bits) {
+  const want = bitsOf(bits).filter(isNet);
+  if (!want.length) return null;
+  const ports = mod?.ports || {};
+  let best = null;
+  for (const [name, net] of Object.entries(mod?.netnames || {})) {
+    if (!isCleanName(name) || net?.hide_name === 1) continue;
+    const nb = bitsOf(net?.bits);
+    if (!nb.includes(want[0])) continue;
+    const score = (want.every(b => nb.includes(b)) ? 8 : 0) + (nb.length === want.length ? 4 : 0) + (Object.prototype.hasOwnProperty.call(ports, name) ? 0 : 2) - name.length / 1000;
+    if (!best || score > best.score) best = { name, score };
+  }
+  return best?.name ?? null;
+}
+
+function srcLine(cell) {
+  const src = typeof cell?.attributes?.src === 'string' ? cell.attributes.src.split('|')[0].replace(/^\/?work\//, '') : '';
+  const m = /:(\d+)(?:\.\d+)?(?:-[\d.]+)?$/.exec(src);
+  return m ? Number(m[1]) : null;
+}
+
+const shortType = type => String(type || 'cell').replace(/^\$paramod\\([^\\]+)\\.*$/, '$1').replace(/^\$+/, '').replace(/\$.*$/, '') || 'cell';
+
+function outputBits(cell) {
+  const conns = cell?.connections || {};
+  for (const pin of ['Y', 'Q', 'RD_DATA0', 'DATA']) if (conns[pin]) return conns[pin];
+  const out = Object.keys(conns).find(p => cell.port_directions?.[p] === 'output');
+  return out ? conns[out] : [];
+}
+
+// Name used for sequential boundaries: `pc` for a register driving net `pc`, else `dff:26`.
+function boundaryName(mod, key, cell) {
+  if (isCleanName(key)) return key;
+  const type = String(cell?.type || '');
+  const net = isFlipFlop(type) || isLatch(type) || type === '$proc' || type.startsWith('$mem') ? netnameFor(mod, outputBits(cell)) : null;
+  if (net) return net;
+  const line = srcLine(cell);
+  return line != null ? `${shortType(type)}:${line}` : shortType(type);
+}
+
+// Label for one step on the path: `u_alu (mips_alu)`, `mux (alu_b)` or `mux :21`.
+function stepLabel(mod, key, cell, resolve) {
+  const type = String(cell?.type || '');
+  if (!key.startsWith('$') && (!type.startsWith('$') || resolve(type))) {
+    const child = shortType(resolve(type) || type);
+    return child && child !== key ? `${key} (${child})` : key;
+  }
+  const short = shortType(type);
+  if (!key.startsWith('$') && isCleanName(key)) return key === short ? key : `${key} (${short})`;
+  const net = netnameFor(mod, outputBits(cell));
+  if (net) return `${short} (${net})`;
+  const line = srcLine(cell);
+  return line != null ? `${short} :${line}` : short;
+}
+
 function netLabel(mod, bit) {
-  for (const [name, net] of Object.entries(mod.netnames || {})) if (bitsOf(net?.bits).includes(bit)) return `net:${name}`;
-  return `net:${bit}`;
+  const name = netnameFor(mod, [bit]);
+  return name ? `net:${name}` : `net:${bit}`;
 }

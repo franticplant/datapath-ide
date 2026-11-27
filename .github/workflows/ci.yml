@@ -40,6 +40,8 @@ jobs:
           node tests/unit/stage4.test.mjs
           node tests/unit/stage5.test.mjs
           node tests/unit/tour.test.mjs
+          node tests/unit/stage-b.test.mjs
+          node tests/unit/stage-c.test.mjs
 
       - name: Correctness suites
         run: make test-correctness USE_MVM=0
@@ -73,6 +75,9 @@ jobs:
 
       - name: Run the end-to-end suite
         run: node tests/browser/workspace.cjs
+
+      - name: UX scenario audit
+        run: node tests/browser/ux-vibe-check.cjs
 
   secrets:
     name: Secret scan

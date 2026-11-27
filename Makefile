@@ -26,7 +26,7 @@ REQUIRED_ASSETS := web/index.html web/favicon.svg web/style.css web/app.js \
   web/engine/vvp.js web/engine/vvp.wasm web/engine/COPYING.icarus \
   $(addprefix web/vendor/,$(VENDOR_FILES))
 
-.PHONY: help serve test test-unit test-smoke test-correctness test-browser check check-assets check-paths bundle check-bundle clean
+.PHONY: help serve test test-unit test-smoke test-correctness test-browser test-ux check check-assets check-paths bundle check-bundle clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -35,7 +35,7 @@ serve: ## Serve web/ on http://127.0.0.1:$(PORT)/
 	@echo "Datapath Studio on http://127.0.0.1:$(PORT)/"
 	$(SERVE)
 
-test: check test-unit test-smoke test-correctness test-browser ## Run every check (what CI runs)
+test: check test-unit test-smoke test-correctness test-browser test-ux ## Run every check (what CI runs)
 
 test-unit: ## Unit tests (assembler, decoder, FSM, themes, showcase, history, tour)
 	$(NODE) sh -c 'node tests/unit/stage4.test.mjs && node tests/unit/stage5.test.mjs && node tests/unit/tour.test.mjs && node tests/unit/stage-b.test.mjs && node tests/unit/stage-c.test.mjs'
@@ -48,6 +48,9 @@ test-correctness: ## Engine, netlist equivalence, Live DUT differential, MIPS or
 
 test-browser: ## Playwright end-to-end suite (sections 1-20)
 	$(PW) node tests/browser/workspace.cjs
+
+test-ux: ## Playwright responsive UX scenario audit
+	$(PW) node tests/browser/ux-vibe-check.cjs
 
 check: check-assets check-paths ## Static checks: shipped assets and Pages-safe paths
 

@@ -43,6 +43,25 @@ const box = async loc => {
   const snap = async (page, name) => {
     if (outDir) await page.screenshot({ path: join(outDir, name) });
   };
+  const assertHorizontalBounds = async (page, container, elements) => {
+    const bounds = await page.locator(container).boundingBox();
+    assert.ok(bounds, `${container} must be visible`);
+    for (const selector of elements) {
+      const target = page.locator(selector);
+      assert.equal(await target.isVisible(), true, `${selector} must be visible`);
+      const rect = await target.boundingBox();
+      assert.ok(rect && rect.x >= bounds.x - 1 && rect.x + rect.width <= bounds.x + bounds.width + 1, `${selector} exceeds ${container} bounds`);
+    }
+  };
+  const assertActiveTabVisible = async page => {
+    await page.waitForFunction(() => {
+      const tab = document.querySelector('.panel-tabs [data-panel].selected');
+      const strip = document.querySelector('.panel-tabs');
+      if (!tab || !strip) return false;
+      const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
+      return a.width > 0 && a.left >= b.left - 1 && a.right <= b.right + 1;
+    });
+  };
   const metrics = async (page) => ({
     viewport: page.viewportSize(),
     overflowX: await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth),
@@ -71,6 +90,8 @@ const box = async loc => {
     await page.goto(baseUrl);
     await page.waitForFunction(() => !document.getElementById('run').disabled);
     await page.waitForSelector('#featured-hero:not([hidden])');
+    assert.doesNotMatch(await page.locator('#console-output').textContent(), /loading/i);
+    await assertHorizontalBounds(page, '.sidebar', ['#new-file', '#new-folder', '#import', '#export', '#collapse-folders', '#toggle-excluded-visibility']);
     report.scenarios.laptopFresh = await metrics(page);
     await snap(page, '01-laptop-fresh.png');
 
@@ -89,6 +110,7 @@ const box = async loc => {
     await page.locator('#tour-next').click();
     await settle();
     await page.waitForSelector('#schem-canvas .schem-cell.kind-module[data-name="u_alu"]');
+    await assertHorizontalBounds(page, '.schem-toolbar', ['#schem-module', '#schem-elaborate', '#schem-critpath', '#schem-resources', '#schem-flatten', '#schem-step-prev', '#schem-play', '#schem-step-next', '#schem-fit', '#schem-search', '#schem-map', '#schem-export']);
     report.scenarios.laptopCh2Xray = { elaborateMs: Date.now() - t0, ...(await metrics(page)) };
     await snap(page, '02-laptop-xray.png');
 
@@ -109,6 +131,8 @@ const box = async loc => {
     await page.locator('#tour-next').click();
     await settle();
     await page.waitForSelector('.wave-row[data-path="fsm_tb.dut.state"]');
+    await assertHorizontalBounds(page, '.wave-toolbar', ['#wave-add-group', '#wave-add-slice', '#wave-views', '#open-vcd', '#download-vcd', '#wave-fit', '#previous-edge', '#next-edge', '#wave-step-prev', '#wave-play', '#wave-step-next', '#wave-value-search', '#wave-value-find', '#wave-short-names', '#wave-gridlines', '#wave-snap', '#wave-cursor']);
+    await assertHorizontalBounds(page, '.bottom', ['#wave-cursor']);
     report.scenarios.laptopCh4Wave = {
       waveRowsVisible: await page.locator('.wave-row:not(.wave-ruler)').count(),
       ...(await metrics(page)),
@@ -138,6 +162,8 @@ const box = async loc => {
     report.scenarios.desktopXray = await metrics(page);
     await page.setViewportSize({ width: 412, height: 915 });
     const schemVisibleOnResize = await page.locator('#schem-fit').isVisible();
+    if (schemVisibleOnResize) await assertActiveTabVisible(page);
+    await assertHorizontalBounds(page, '.schem-toolbar', ['#schem-module', '#schem-elaborate', '#schem-critpath', '#schem-resources', '#schem-flatten', '#schem-step-prev', '#schem-play', '#schem-step-next', '#schem-fit', '#schem-search', '#schem-map', '#schem-export']);
     if (!schemVisibleOnResize) {
       await page.locator('button[data-view="console"]').click();
       await page.locator('[data-panel="schematic"]').click();
@@ -175,6 +201,7 @@ const box = async loc => {
     await featurePage.locator('#opt-strict-lint').uncheck();
     await featurePage.getByRole('button', { name: 'Done' }).click();
     await featurePage.locator('#sidebar-hierarchy').click();
+    assert.equal(await featurePage.locator('.side-actions').isVisible(), false);
     await featurePage.locator('#hierarchy-tree button').filter({ hasText: 'dut : counter' }).click();
     assert.match(await featurePage.locator('#active-file').textContent(), /testbench\.v/);
     assert.match(await featurePage.locator('#cursor').textContent(), /Ln 6,/);
@@ -231,10 +258,13 @@ const box = async loc => {
     await page.locator('#schem-critpath').click();
     await page.waitForSelector('#schem-critpath-banner:not([hidden])');
     assert.match(await page.locator('#schem-critpath-banner').textContent(), /Depth [1-9]/);
+    assert.doesNotMatch(await page.locator('#schem-critpath-banner').textContent(), /\$_ivl_/);
     assert.ok(await page.locator('.schem-cell.is-critpath').count() > 0);
     for (const [name, viewport] of [['stageCLaptop', { width: 1280, height: 720 }], ['stageCPhone', { width: 412, height: 915 }]]) {
       await page.setViewportSize(viewport);
       const dimensions = await metrics(page);
+      await assertHorizontalBounds(page, '.schem-toolbar', ['#schem-module', '#schem-export']);
+      if (name === 'stageCPhone') await assertActiveTabVisible(page);
       assert.equal(dimensions.overflowX, false, `${name}: horizontal overflow`);
       assert.equal(dimensions.topbarWrapped, false, `${name}: wrapped topbar`);
       assert.equal(await page.locator('#schem-resources-panel').isVisible(), true);

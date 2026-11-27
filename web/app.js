@@ -957,6 +957,7 @@ document.querySelectorAll('[data-panel]').forEach(button => button.onclick = eve
   if (button.dataset.panel === 'board') board?.render();
   if (button.dataset.panel === 'waveform') waveform?.repaint();
   if (innerWidth <= 900) setMobileView('console');
+  requestAnimationFrame(() => button.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }));
   nav?.record();
 });
 
@@ -1351,7 +1352,7 @@ const engine = new EngineClient(() => new Worker('./simulator-worker.js', { type
   if (event.type === 'ready') {
     setBusy(false);
     engineStatus('Icarus WASM ready', 'st-ready');
-    $('console-output').textContent ||= 'Ready.';
+    if ($('console-output').textContent.trim() === 'The simulation engine is loading.') $('console-output').textContent = 'Engine ready. Press Run (Ctrl+Enter) to simulate, or start the Interactive Tour above.';
     while (engineReadyWaiters.length) engineReadyWaiters.shift()();
   } else if (event.type === 'status') {
     engineStatus(`${event.phase}…`, 'st-running');
@@ -1644,7 +1645,8 @@ function scheduleFsmRefresh() {
 function showPanel(name) {
   outputOpened = true;
   if (layout.getState().dockHidden) layout.update({ mode: 'custom', dockHidden: false });
-  document.querySelector(`[data-panel="${name}"]`).click();
+  const tab = document.querySelector(`[data-panel="${name}"]`);
+  tab?.click();
   if (innerWidth <= 900) setMobileView('console');
 }
 
@@ -1943,6 +1945,7 @@ function renderHierarchy() {
 }
 for (const name of ['files', 'hierarchy']) $('sidebar-' + name).onclick = () => {
   $('files').hidden = name !== 'files'; $('hierarchy-tree').hidden = name !== 'hierarchy';
+  document.querySelector('.side-actions').hidden = name !== 'files';
   $('sidebar-files').setAttribute('aria-pressed', String(name === 'files'));
   $('sidebar-hierarchy').setAttribute('aria-pressed', String(name === 'hierarchy'));
   if (name === 'hierarchy') renderHierarchy();
@@ -1953,7 +1956,10 @@ window.addEventListener('resize', () => {
   const phone = innerWidth <= 900;
   if (phone && !wasPhone && !layout.getState().dockHidden) {
     const selected = document.querySelector('[data-panel].selected')?.dataset.panel;
-    if (selected && (selected !== 'console' || outputOpened)) setMobileView('console');
+    if (selected && (selected !== 'console' || outputOpened)) {
+      setMobileView('console');
+      requestAnimationFrame(() => document.querySelector('[data-panel].selected')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }));
+    }
   }
   wasPhone = phone;
 });

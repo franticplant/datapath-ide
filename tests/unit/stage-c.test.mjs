@@ -377,9 +377,9 @@ await check('analyzeCriticalPath: weighted longest path from port to port', () =
   assert.deepEqual(p.cells, ['g_and', 'g_add', 'g_mux']);
   assert.equal(p.gateCount, 3);
   assert.deepEqual(p.steps, [
-    { cell: 'g_and', type: '$and', weight: 1, cumDepth: 1, src: 'top.v:3' },
-    { cell: 'g_add', type: '$add', weight: 2.5, cumDepth: 3.5, src: 'top.v:4' },
-    { cell: 'g_mux', type: '$mux', weight: 1.5, cumDepth: 5, src: 'top.v:5' },
+    { cell: 'g_and', type: '$and', label: 'g_and (and)', weight: 1, cumDepth: 1, src: 'top.v:3' },
+    { cell: 'g_add', type: '$add', label: 'g_add (add)', weight: 2.5, cumDepth: 3.5, src: 'top.v:4' },
+    { cell: 'g_mux', type: '$mux', label: 'g_mux (mux)', weight: 1.5, cumDepth: 5, src: 'top.v:5' },
   ]);
   assert.equal(p.nets.length, 4);
   assert.equal(p.nets[p.nets.length - 1], 20); // y[0] and y[1] tie at depth 5; the first endpoint bit wins
@@ -455,6 +455,34 @@ await check('analyzeCriticalPath: submodules use their inner depth; register out
   assert.equal(analyzeCriticalPath(self, 'a').depth, 1.5); // recursive hierarchy falls back to one stage
 });
 
+await check('analyzeCriticalPath: friendly labels never leak Icarus internals', () => {
+  const ff = '$dff$/work/top.v:26$_ivl_67', anon = '$dffe$top.v:40$_ivl_9', mux = '$mux$top.v:21$_ivl_23', add = '$add$top.v:24$_ivl_5', and = '$and$$_ivl_3';
+  const json = { modules: { top: {
+    attributes: { top: bin(1) },
+    ports: { a: { direction: 'input', bits: [2] }, clk: { direction: 'input', bits: [1] }, pc_out: { direction: 'output', bits: [10, 11] } },
+    netnames: { pc: { hide_name: 0, bits: [10, 11] }, pc_out: { hide_name: 0, bits: [10, 11] }, '_ivl_23': { hide_name: 1, bits: [12, 13] }, pc_next: { hide_name: 0, bits: [14, 15] } },
+    cells: {
+      [ff]: { type: '$dff', attributes: { src: '/work/top.v:26' }, port_directions: { CLK: 'input', D: 'input', Q: 'output' }, connections: { CLK: [1], D: [14, 15], Q: [10, 11] } },
+      [mux]: { type: '$mux', attributes: { src: 'top.v:21' }, port_directions: { A: 'input', B: 'input', S: 'input', Y: 'output' }, connections: { A: [10, 11], B: [11, 10], S: [2], Y: [12, 13] } },
+      [add]: { type: '$add', attributes: { src: 'top.v:24' }, port_directions: { A: 'input', B: 'input', Y: 'output' }, connections: { A: [12, 13], B: ['1', '0'], Y: [14, 15] } },
+      [and]: { type: '$and', attributes: {}, port_directions: { A: 'input', B: 'input', Y: 'output' }, connections: { A: [2], B: [2], Y: [20] } },
+      [anon]: { type: '$dffe', attributes: { src: 'top.v:40' }, port_directions: { CLK: 'input', EN: 'input', D: 'input', Q: 'output' }, connections: { CLK: [1], EN: [20], D: [2], Q: [30] } },
+    },
+  } } };
+  const p = analyzeCriticalPath(json, 'top');
+  assert.equal(p.startpoint, 'pc (Q)'); // the register's own net wins over the pc_out port alias
+  assert.equal(p.endpoint, 'pc (D)');
+  assert.deepEqual(p.steps.map(s => s.label), ['mux :21', 'add (pc_next)']);
+  assert.deepEqual(p.cells, [mux, add]);
+  assert.deepEqual(p.steps.map(s => s.cell), [mux, add]);
+  delete json.modules.top.cells[mux];
+  delete json.modules.top.cells[add];
+  const q = analyzeCriticalPath(json, 'top');
+  assert.equal(q.endpoint, 'dffe:40 (EN)'); // no clean net on Q: type and source line
+  assert.deepEqual(q.steps.map(s => s.label), ['and']);
+  assert.equal(q.steps[0].cell, and);
+});
+
 await check('analyzeCriticalPath: empty and invalid input', () => {
   for (const bad of [null, {}, { modules: {} }]) {
     const p = analyzeCriticalPath(bad, 'x');
@@ -493,7 +521,20 @@ await check('real elaboration: mips_cpu resources and critical path', async () =
   assert.ok(cp.cells.includes('u_alu') && cp.cells.includes('u_imem'));
   assert.equal(cp.gateCount, cp.steps.length);
   assert.equal(cp.steps[cp.steps.length - 1].cumDepth, cp.depth);
-  for (const name of Object.keys(r.yosysJson.modules)) assert.ok(Number.isFinite(analyzeCriticalPath(r.yosysJson, name).depth));
+  // Friendly labels for the UI; raw keys stay intact for schematic highlighting.
+  assert.equal(cp.startpoint, 'pc (Q)');
+  assert.equal(cp.endpoint, 'pc (D)');
+  assert.ok(cp.steps.every(s => typeof s.label === 'string' && s.label && !/\$|_ivl_/.test(s.label)), JSON.stringify(cp.steps.map(s => s.label)));
+  assert.ok(cp.steps.some(s => s.label === 'u_alu (mips_alu)'));
+  assert.ok(cp.steps.some(s => /^mux :\d+$/.test(s.label)));
+  assert.ok(cp.steps.some(s => s.cell.startsWith('$') && s.cell.includes('_ivl_'))); // raw key preserved
+  assert.deepEqual(cp.cells, cp.steps.map(s => s.cell).filter((c, i, all) => c !== all[i - 1]));
+  for (const name of Object.keys(r.yosysJson.modules)) {
+    const sub = analyzeCriticalPath(r.yosysJson, name);
+    assert.ok(Number.isFinite(sub.depth));
+    for (const text of [sub.startpoint, sub.endpoint, ...sub.steps.map(s => s.label)]) assert.ok(!/\$|_ivl_/.test(text ?? ''), `${name}: ${text}`);
+    assert.ok(sub.steps.every(s => s.cell in r.yosysJson.modules[name].cells));
+  }
   assert.deepEqual(rules(lintRtl(project.files, { yosysJson: r.yosysJson }), 'LATCH_INFERRED'), []);
 });
 

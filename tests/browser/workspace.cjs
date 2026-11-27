@@ -536,6 +536,7 @@ const webRoot = join(__dirname, '../../web');
     await page.locator('#close-more').click();
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.locator('#editor .cm-content').fill(designBackup);
+    await page.waitForFunction(async expected => (await import('./vendor/editor.js')).editorText(document.querySelector('#editor')) === expected, designBackup);
 
     // 13. Stage 1: wave setup persists across re-run, canvas transport + value search, batch testbench runner,
     //     console coloring/filter, Verilog-2001, .mem MIPS decode, workspace search, F12 go-to-definition, IndexedDB storage

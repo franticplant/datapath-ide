@@ -1096,7 +1096,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     for (const node of graph?.nodes || []) nodeEls.get(node.id)?.classList.toggle('is-critpath', criticalEnabled && node.id.startsWith('cell:') && cells.has(node.name));
     for (const edge of graph?.edges || []) wireEls.get(edge.id)?.classList.toggle('is-critpath', criticalEnabled && edge.bits?.some(bit => typeof bit === 'number' && nets.has(bit)));
   }
-  const pointLabel = value => value == null ? '—' : typeof value === 'object' ? (value.name || value.cell || value.port || JSON.stringify(value)) : String(value);
+  const displayLabel = value => String(value).replace(/\$_ivl_\d+/g, 'generated');
+  const pointLabel = value => value == null ? '—' : displayLabel(typeof value === 'object' ? (value.name || value.cell || value.port || JSON.stringify(value)) : value);
   function renderCriticalPath() {
     const host = $('schem-critpath-banner');
     host.hidden = !criticalEnabled;
@@ -1111,7 +1112,8 @@ export function installSchematic({ store, getFiles, getRtlSources, getSettings, 
     const items = path.hasCombLoop ? (path.loopCells || []).map(cell => ({ cell, type: 'loop' })) : path.steps || [];
     for (const step of items) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'chip';
-      button.textContent = `${step.cell} (${step.type})${step.cumDepth != null ? ` · ${step.cumDepth}` : ''}`;
+      button.textContent = `${displayLabel(step.label || step.cell)} (${displayLabel(step.type)})${step.cumDepth != null ? ` · ${step.cumDepth}` : ''}`;
+      button.dataset.cell = step.cell;
       const id = `cell:${step.cell}`; button.disabled = !index?.nodes.has(id);
       button.onclick = () => { fittedToCanvas = false; focusMatch({ kind: 'node', id }); };
       steps.append(button);
